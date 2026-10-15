@@ -46,7 +46,6 @@ pub async fn run(mut stream: TcpStream, cfg: Arc<Config>, id: SessionId) -> Resu
     set_keepalive(&stream);
     let peer = stream.peer_addr()?;
     let source = blocking(|| (cfg.frame_source)()).context("creating frame source")?;
-    let cursor: Box<dyn CursorSource> = blocking(|| (cfg.cursor_source)());
     let (w, h) = source.size();
     let cmds = cfg.server_cmds(canonical_ip(peer.ip()));
 
@@ -72,6 +71,7 @@ pub async fn run(mut stream: TcpStream, cfg: Arc<Config>, id: SessionId) -> Resu
     let keys: StreamKeys = Arc::default();
     tokio::spawn(reader(rd, tx, keys.clone()));
 
+    let cursor: Box<dyn CursorSource> = blocking(|| (cfg.cursor_source)());
     let input: Box<dyn InputSink> = match &cfg.input {
         Some(make) => blocking(|| make(w as u32, h as u32)).context("creating input sink")?,
         None => Box::new(LoggingSink),
@@ -1273,6 +1273,27 @@ mod tests {
         ] {
             assert!(log.has(e), "missing {e:?} in {:?}", log.0.lock().unwrap());
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_cursor_source_before_auth() {
+        let log = Arc::new(Log::default());
+        let mut cfg = test_config();
+        let cursor_log = log.clone();
+        cfg.cursor_source = Arc::new(move || {
+            cursor_log.push("cursor".into());
+            Box::new(crate::source::TestCursor::default())
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run(stream, Arc::new(cfg), 7).await
+        });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        assert_eq!(drive_client(&mut client, "wes", "nope").await.unwrap(), 1);
+        assert!(server.await.unwrap().is_err());
+        assert!(!log.has("cursor"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

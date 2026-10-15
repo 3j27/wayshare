@@ -2,16 +2,6 @@
 
 Review date: 2026-10-15. Reviewed the initial implementation; the repository has no commits yet.
 
-## P2: Unauthenticated connections hide the host cursor
-
-Location: `src/rfb/session.rs:49`.
-
-The session creates the cursor source before authentication. The Linux factory immediately
-sets Hyprland's global cursor visibility. Repeated unauthenticated connections can keep
-the cursor hidden.
-
-Defer that side effect until authentication succeeds.
-
 ## P2: Failed HP renegotiation leaves framebuffer updates paused
 
 Location: `src/rfb/session.rs:702`.
