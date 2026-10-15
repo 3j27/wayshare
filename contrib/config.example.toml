@@ -3,7 +3,7 @@
 
 listen = "0.0.0.0:5900"
 # name = "omarchy"                    # default: the host name
-# srp_file = "~/.config/wayshare/srp-wesgrimes"   # default: srp-$USER next to this file
+# srp_file = "~/.config/wayshare/srp-alice"       # default: srp-$USER next to this file
 output = "HEADLESS-1"                 # default: unset (test pattern)
 resize = true                         # match the viewer's display mode, restore afterwards
 

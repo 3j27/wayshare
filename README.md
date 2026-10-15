@@ -1,65 +1,99 @@
 # wayshare
 
-Screen Sharing server for Linux (Wayland/Hyprland) that the stock macOS Screen Sharing.app
-connects to, including High Performance mode. Requires Hyprland 0.56 or newer.
+Share your Hyprland desktop with a Mac, using the Screen Sharing app it already has.
+High Performance mode works too. There's nothing to install on the Mac.
 
-## Setup
+Needs Hyprland 0.56 or newer.
 
-1. Build and install:
+## Install
+
+**Arch-based distros**, from the AUR:
+
+```sh
+yay -S wayshare
+```
+
+**Omarchy:**
+
+```sh
+omarchy pkg add wayshare
+```
+
+**From source**, with Rust 1.89 or newer:
+
+```sh
+git clone https://github.com/wesleygrimes/wayshare
+cd wayshare
+cargo build --release
+tools/install.sh          # or: mise run install
+```
+
+This puts `wayshare` in `/usr/local/bin` (it asks for sudo). Set `PREFIX` to install
+somewhere else.
+
+## Set up
+
+1. Pick a password. Screen Sharing asks for this user name and password when you connect.
 
    ```sh
-   cargo build --release
-   install -m 755 target/release/wayshare ~/.local/bin/wayshare
+   wayshare set-password --user "$USER"
    ```
 
-2. Store a login. wayshare keeps an SRP verifier (salt and verifier), never the password:
+   wayshare stores a salted verifier, never the password itself.
+
+2. Tell wayshare which monitor to share. `hyprctl monitors` lists them.
 
    ```sh
-   wayshare set-password --user "$USER"      # prompts; writes ~/.config/wayshare/srp-$USER (mode 0600)
+   mkdir -p ~/.config/wayshare
+   echo 'output = "DP-1"' > ~/.config/wayshare/config.toml
    ```
 
-   Screen Sharing logs in with this user name and password (security type 36, no prompt
-   about server identity).
-
-3. Configure: copy `contrib/config.example.toml` to `~/.config/wayshare/config.toml` and set
-   `output` to the Wayland output to share. Command-line flags override the file
-   (`wayshare --help`).
-
-4. Run as a user service:
+3. Start it with your session:
 
    ```sh
-   cp contrib/wayshare.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
    systemctl --user enable --now wayshare
    ```
 
-5. Connect from a Mac: `vnc://<user>@<host>` in Finder (Go > Connect to Server) or Screen
-   Sharing.app. For High Performance, choose it in Screen Sharing, or open
-   `vnc://<user>@<host>?quality=high&numVirtualDisplays=1`.
+4. On the Mac, open Finder, choose **Go > Connect to Server** and enter `vnc://` followed
+   by the Linux machine's address, like `vnc://192.168.1.20`. It also shows up in Finder's
+   sidebar under **Network**.
 
-## Firewall
+That's it. If something doesn't connect, see [Troubleshooting](docs/troubleshooting.md).
 
-| Port | Needed | Why |
-|---|---|---|
-| TCP 5900 from the LAN | yes | RFB control connection |
-| UDP 5353 (mDNS) from the LAN | optional | lets Finder's sidebar and Screen Sharing list the machine |
-| UDP 5960/5962 | no | wayshare sends media first, and the viewer's RTCP returns through connection tracking (verified with ufw's default deny on 2026-10-14) |
+## Upgrade
 
-With ufw:
+With a package, upgrade as usual, then restart the service:
 
 ```sh
-sudo ufw allow from 192.168.1.0/24 to any port 5900 proto tcp
-sudo ufw allow from 192.168.1.0/24 to any port 5353 proto udp   # optional, Bonjour
+systemctl --user restart wayshare
 ```
 
-## Behaviour
+From source:
 
-- One High Performance viewer at a time. Later viewers get Standard mode, except a reconnect
-  from the same address, which takes over.
-- If the viewer's RTCP goes silent for 10 s, HP stops and the session falls back to
-  Standard mode.
-- Every session exit, including a crash or a dropped network (TCP keepalive notices within about
-  30 s), releases held keys and buttons, stops HP media and restores the output's mode.
+```sh
+git pull
+cargo build --release
+tools/install.sh
+systemctl --user restart wayshare
+```
+
+## Uninstall
+
+```sh
+systemctl --user disable --now wayshare
+```
+
+Then remove the package, or run `tools/install.sh --uninstall` for a source install. Your
+password and settings stay in `~/.config/wayshare` until you delete it.
+
+## More
+
+- [Configuration](docs/configuration.md): every setting, keyboard mapping, the sidebar name
+- [High Performance mode](docs/high-performance.md): what it needs, encoders, audio
+- [Firewall](docs/firewall.md): which ports to open
+- [Troubleshooting](docs/troubleshooting.md): logs and the usual problems
+- [Packaging](docs/packaging.md): install layout and dependencies, for distro packagers
+- [Development](docs/development.md): building, tests, live checks
 
 ## License
 
