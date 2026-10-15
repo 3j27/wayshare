@@ -19,13 +19,7 @@ pub struct Hyprland {
 
 impl Hyprland {
     pub fn from_env() -> Result<Self> {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?;
-        let hypr = Path::new(&runtime).join("hypr");
-        let socket = match std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-            Ok(sig) if !sig.is_empty() => hypr.join(sig).join(".socket.sock"),
-            _ => newest_live_socket(&hypr)?,
-        };
-        Ok(Self::with_socket(socket))
+        Ok(Self::with_socket(instance_dir()?.join(".socket.sock")))
     }
 
     pub fn with_socket(socket: PathBuf) -> Self {
@@ -61,17 +55,43 @@ impl Hyprland {
     }
 }
 
-fn newest_live_socket(hypr: &Path) -> Result<PathBuf> {
+fn runtime_dir() -> Result<PathBuf> {
+    Ok(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?.into())
+}
+
+fn instance_dir() -> Result<PathBuf> {
+    let hypr = runtime_dir()?.join("hypr");
+    match std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        Ok(sig) if !sig.is_empty() => Ok(hypr.join(sig)),
+        _ => newest_live_instance(&hypr),
+    }
+}
+
+/// The Wayland socket of the Hyprland instance, for when `$WAYLAND_DISPLAY` is unset.
+pub fn wayland_socket() -> Result<PathBuf> {
+    let lock = instance_dir()?.join("hyprland.lock");
+    let text = std::fs::read_to_string(&lock).with_context(|| format!("read {}", lock.display()))?;
+    let name = lock_wayland_display(&text).ok_or_else(|| anyhow!("no Wayland socket in {}", lock.display()))?;
+    Ok(runtime_dir()?.join(name))
+}
+
+/// `hyprland.lock` holds the compositor's pid, then its Wayland socket name.
+fn lock_wayland_display(lock: &str) -> Option<&str> {
+    lock.lines().nth(1).map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn newest_live_instance(hypr: &Path) -> Result<PathBuf> {
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for e in std::fs::read_dir(hypr).with_context(|| format!("read {}", hypr.display()))? {
-        let sock = e?.path().join(".socket.sock");
+        let dir = e?.path();
+        let sock = dir.join(".socket.sock");
         let Ok(meta) = std::fs::metadata(&sock) else { continue };
         if UnixStream::connect(&sock).is_err() {
             continue;
         }
         let t = meta.modified()?;
         if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
-            best = Some((t, sock));
+            best = Some((t, dir));
         }
     }
     best.map(|(_, p)| p).ok_or_else(|| anyhow!("no running Hyprland instance under {}", hypr.display()))
@@ -221,6 +241,13 @@ mod tests {
         assert!(!supported("0.55.9"));
         assert!(!supported("0.9.0"));
         assert!(!supported("garbage"));
+    }
+
+    #[test]
+    fn lock_file() {
+        assert_eq!(lock_wayland_display("974\nwayland-1\n"), Some("wayland-1"));
+        assert_eq!(lock_wayland_display("974\n"), None);
+        assert_eq!(lock_wayland_display(""), None);
     }
 
     #[test]

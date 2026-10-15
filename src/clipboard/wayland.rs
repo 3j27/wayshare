@@ -49,7 +49,7 @@ pub struct WaylandClipboard {
 impl WaylandClipboard {
     /// Connects to `$WAYLAND_DISPLAY` and starts watching the selection.
     pub fn spawn() -> Result<Self> {
-        let conn = Connection::connect_to_env().context("connect to Wayland display")?;
+        let conn = crate::display::connect_wayland().context("connect to Wayland display")?;
         let (globals, queue) = registry_queue_init::<State>(&conn)?;
         let qh = queue.handle();
         let seat: WlSeat = globals.bind(&qh, 1..=1, ()).context("wl_seat")?;
@@ -387,7 +387,7 @@ impl Dispatch<ExtDataControlSourceV1, ()> for State {
 
 /// For probes: which data-control globals the compositor offers.
 pub fn data_control_globals() -> Result<Vec<(String, u32)>> {
-    let conn = Connection::connect_to_env()?;
+    let conn = crate::display::connect_wayland()?;
     let (globals, _q) = registry_queue_init::<State>(&conn)?;
     Ok(globals
         .contents()

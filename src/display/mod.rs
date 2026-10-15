@@ -5,6 +5,18 @@ pub mod hyprland;
 
 use anyhow::Result;
 
+/// Connects to `$WAYLAND_DISPLAY`, or to Hyprland's socket when a service starts without it.
+#[cfg(target_os = "linux")]
+pub fn connect_wayland() -> Result<wayland_client::Connection> {
+    use anyhow::Context;
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return Ok(wayland_client::Connection::connect_to_env()?);
+    }
+    let path = hyprland::wayland_socket()?;
+    let stream = std::os::unix::net::UnixStream::connect(&path).with_context(|| format!("connect {}", path.display()))?;
+    Ok(wayland_client::Connection::from_socket(stream)?)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayMode {
     pub width: u32,

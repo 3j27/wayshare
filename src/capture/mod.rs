@@ -136,7 +136,7 @@ impl Capturer {
 
         pub fn with_options(output: Option<&str>, opts: CaptureOptions) -> Result<Self> {
         let protocol = opts.protocol;
-        let conn = Connection::connect_to_env().context("connect to Wayland")?;
+        let conn = crate::display::connect_wayland().context("connect to Wayland")?;
         let (globals, mut queue) = registry_queue_init::<State>(&conn)?;
         let qh = queue.handle();
 
