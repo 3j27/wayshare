@@ -70,13 +70,15 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           awk -v v="$version" '/^## / { on = index($0, "## " v " ") == 1; next } on' CHANGELOG.md > notes.md
           cat >> notes.md <<EOF
+
           ## Install
 
           \`\`\`sh
           curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh | sh
           \`\`\`
 
-          Or with [mise](https://mise.jdx.dev): \`mise use -g github:$GITHUB_REPOSITORY\`
+          Or with [mise](https://mise.jdx.dev): \`mise use -g github:$GITHUB_REPOSITORY\`, then
+          \`wayshare install-service\`
 
           Then follow [Set up](https://github.com/$GITHUB_REPOSITORY#set-up).
 
