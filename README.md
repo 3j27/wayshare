@@ -1,7 +1,7 @@
 # wayshare
 
 Screen Sharing server for Linux (Wayland/Hyprland) that the stock macOS Screen Sharing.app
-connects to, including High Performance mode.
+connects to, including High Performance mode. Requires Hyprland 0.56 or newer.
 
 ## Setup
 

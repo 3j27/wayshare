@@ -224,6 +224,7 @@ async fn run(s: Settings) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     if let Some(output) = &s.output {
+        wayshare::display::hyprland::Hyprland::from_env()?.check_version()?;
         cfg.frame_source = wayshare::server_linux::capture_factory(Some(output.clone()));
         cfg.cursor_source = wayshare::server_linux::cursor_factory(Some(output.clone()));
         match wayshare::clipboard::wayland::WaylandClipboard::spawn() {

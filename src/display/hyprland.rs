@@ -11,18 +11,10 @@ use tracing::{debug, warn};
 
 use super::{DisplayManager, DisplayMode, OutputInfo};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConfigKind {
-    Unknown,
-    /// hyprlang: `keyword monitor ...`.
-    Legacy,
-    /// Lua config (0.55+): `keyword` is refused, use `eval hl.monitor{...}`.
-    Lua,
-}
+const MIN_VERSION: (u64, u64) = (0, 56);
 
 pub struct Hyprland {
     socket: PathBuf,
-    config: ConfigKind,
 }
 
 impl Hyprland {
@@ -37,7 +29,7 @@ impl Hyprland {
     }
 
     pub fn with_socket(socket: PathBuf) -> Self {
-        Self { socket, config: ConfigKind::Unknown }
+        Self { socket }
     }
 
     pub fn request(&self, cmd: &str) -> Result<String> {
@@ -51,25 +43,21 @@ impl Hyprland {
         Ok(out)
     }
 
+    pub fn check_version(&self) -> Result<()> {
+        let version = parse_version(&self.request("j/version")?)?;
+        ensure!(supported(&version), "wayshare needs Hyprland {}.{} or newer, found {version}", MIN_VERSION.0, MIN_VERSION.1);
+        Ok(())
+    }
+
     fn ok(&self, cmd: &str) -> Result<()> {
         let r = self.request(cmd)?;
         ensure!(r.trim() == "ok", "hyprland `{cmd}`: {}", r.trim());
         Ok(())
     }
 
-    fn apply_rule(&mut self, output: &str, mode: &DisplayMode, position: &str) -> Result<()> {
+    fn apply_rule(&self, output: &str, mode: &DisplayMode, position: &str) -> Result<()> {
         let m = format!("{}x{}@{}", mode.width, mode.height, fmt_num(mode.refresh_hz));
-        let scale = fmt_num(mode.scale);
-        if self.config != ConfigKind::Lua {
-            let r = self.request(&format!("keyword monitor {output},{m},{position},{scale}"))?;
-            if r.trim() == "ok" {
-                self.config = ConfigKind::Legacy;
-                return Ok(());
-            }
-            ensure!(r.contains("non-legacy"), "hyprland keyword monitor: {}", r.trim());
-            self.config = ConfigKind::Lua;
-        }
-        self.ok(&lua_monitor_rule(output, &m, position, &scale))
+        self.ok(&lua_monitor_rule(output, &m, position, &fmt_num(mode.scale)))
     }
 }
 
@@ -104,6 +92,19 @@ fn fmt_num(v: f64) -> String {
 
 fn lua_monitor_rule(output: &str, mode: &str, position: &str, scale: &str) -> String {
     format!("eval hl.monitor({{ output = \"{output}\", mode = \"{mode}\", position = \"{position}\", scale = {scale} }})")
+}
+
+fn parse_version(json: &str) -> Result<String> {
+    let v: Value = serde_json::from_str(json).context("version JSON")?;
+    Ok(v["version"].as_str().ok_or_else(|| anyhow!("version: missing version"))?.to_string())
+}
+
+fn supported(version: &str) -> bool {
+    let mut parts = version.split('.').map(str::parse::<u64>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= MIN_VERSION,
+        _ => false,
+    }
 }
 
 pub fn parse_monitors(json: &str) -> Result<Vec<OutputInfo>> {
@@ -206,6 +207,20 @@ mod tests {
         );
         assert!(check_name("HEADLESS-1").is_ok());
         assert!(check_name("x\" }) os.execute(\"").is_err());
+    }
+
+    #[test]
+    fn version_check() {
+        let json = r#"{"branch": "v0.56.2", "version": "0.56.2", "tag": "v0.56.2"}"#;
+        assert_eq!(parse_version(json).unwrap(), "0.56.2");
+        assert!(parse_version(r#"{"tag": "v0.56.2"}"#).is_err());
+        assert!(parse_version("not json").is_err());
+        assert!(supported("0.56.2"));
+        assert!(supported("0.56"));
+        assert!(supported("1.0.0"));
+        assert!(!supported("0.55.9"));
+        assert!(!supported("0.9.0"));
+        assert!(!supported("garbage"));
     }
 
     #[test]
