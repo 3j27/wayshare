@@ -1,4 +1,4 @@
-//! Apple "packed scrap" pasteboard serialization and its zlib framing (`notes/clipboard.md`).
+//! Apple "packed scrap" pasteboard serialization and its zlib framing.
 
 use anyhow::{Context, Result, bail, ensure};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};

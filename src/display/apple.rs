@@ -1,5 +1,5 @@
 //! Client msg 29 (SetDisplayConfiguration) and the DisplayInfo (1101) / DisplayInfo2 (1105)
-//! pseudo-encoding payloads. Layouts: `notes/linux-input-display-impl.md` (msg 29 section).
+//! pseudo-encoding payloads.
 
 use anyhow::{Result, bail, ensure};
 

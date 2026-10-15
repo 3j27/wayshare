@@ -911,7 +911,7 @@ impl Session {
     }
 }
 
-/// Apple shared pasteboard (msgs 11/21/31, MiscStateChange 2/3). Flow: notes/clipboard.md.
+/// Apple shared pasteboard (msgs 11/21/31, MiscStateChange 2/3).
 impl Session {
     async fn set_shared_clipboard(&mut self, on: bool) -> Result<()> {
         let Some(cb) = self.cfg.clipboard_backend.clone() else {

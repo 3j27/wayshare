@@ -1,4 +1,4 @@
-//! HP audio: AAC-ELD (48 kHz stereo, 480-sample frames) in raw RTP. See `notes/audio.md`.
+//! HP audio: AAC-ELD (48 kHz stereo, 480-sample frames) in raw RTP.
 
 #[cfg(target_os = "linux")]
 pub mod capture;

@@ -1,9 +1,9 @@
-//! HEVC RTP packetizer in Apple's HP format (RFC 7798 with deviations, see `notes/media.md`).
+//! HEVC RTP packetizer in Apple's HP format (RFC 7798 with deviations).
 
 pub const CLOCK_RATE: u32 = 24_000;
 pub const EXT_PROFILE: u16 = 0x9311;
 pub const DEFAULT_MTU_PAYLOAD: usize = 1300;
-// Control-trailer header bits (VideoProcessing control byte, see notes/hp-impl.md).
+// Control-trailer header bits (VideoProcessing control byte).
 const CB_SCREEN_WINDOW: u8 = 0x01;
 const CB_END_OF_FRAME: u8 = 0x02;
 const CB_FRAME_SIZE: u8 = 0x08;

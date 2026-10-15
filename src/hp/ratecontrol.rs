@@ -1,7 +1,7 @@
 //! Sender-side rate control driven by the receiver's RTCP feedback.
 //!
 //! The viewer runs its own bandwidth estimator and reports it in RTCP APP `RCTL` packets
-//! about every 50 ms (layout in `notes/hp-impl.md`). This controller follows that estimate,
+//! about every 50 ms. This controller follows that estimate,
 //! backs off on queueing delay (OWRD) growth and keyframe-request bursts, and ramps up
 //! slowly otherwise.
 

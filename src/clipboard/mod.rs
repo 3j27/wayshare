@@ -1,4 +1,4 @@
-//! Clipboard sync with Apple's shared pasteboard. Wire format: `notes/clipboard.md`.
+//! Clipboard sync with Apple's shared pasteboard.
 
 pub mod mime;
 pub mod pack;

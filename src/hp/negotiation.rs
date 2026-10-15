@@ -1,7 +1,7 @@
 //! AVCMediaStreamNegotiator offer parsing and answer generation (server side).
 //!
 //! Offer/answer = binary plist; the media blob is a zlib-compressed `VCMediaNegotiationBlob`
-//! protobuf. Field numbers are in `notes/hp-impl.md`.
+//! protobuf.
 
 use std::io::{Read, Write};
 

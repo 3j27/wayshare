@@ -1,7 +1,4 @@
 //! Input injection: client key/pointer/scroll messages -> virtual keyboard and pointer.
-//!
-//! Protocol layouts: `notes/client-messages.md` (Input). Mapping and verification notes:
-//! `notes/linux-input-display-impl.md`.
 
 pub mod evdev;
 pub mod keyboard;
