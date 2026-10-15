@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
+    version,
     about = "Screen Sharing server for the stock macOS client",
     args_conflicts_with_subcommands = true
 )]
