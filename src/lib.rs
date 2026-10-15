@@ -13,4 +13,5 @@ pub mod mdns;
 pub mod rfb;
 #[cfg(target_os = "linux")]
 pub mod server_linux;
+pub mod service;
 pub mod source;

@@ -132,6 +132,8 @@ enum Command {
         #[arg(long, default_value_t = srp::DEFAULT_ITERATIONS)]
         iterations: u32,
     },
+    /// Write a systemd user unit that runs this binary (for installs without a package).
+    InstallService,
 }
 
 fn read_password(path: Option<&Path>) -> Result<Vec<u8>> {
@@ -168,6 +170,16 @@ async fn main() -> Result<()> {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
     let cli = Cli::parse();
+
+    if let Some(Command::InstallService) = cli.command {
+        let path = wayshare::service::install()?;
+        println!("wrote {}", path.display());
+        let reload = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+        if !reload.is_ok_and(|s| s.success()) {
+            warn!("systemctl --user daemon-reload failed; run it before starting wayshare");
+        }
+        return Ok(());
+    }
 
     if let Some(Command::SetPassword {
         user,
