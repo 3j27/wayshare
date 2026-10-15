@@ -8,26 +8,20 @@ Needs Hyprland 0.56 or newer and systemd.
 
 ## Install
 
-From the AUR, on Arch-based distros:
-
 ```sh
-yay -S wayshare
+curl -fsSL https://raw.githubusercontent.com/wesleygrimes/wayshare/main/install.sh | sh
 ```
 
-On Omarchy:
+This puts `wayshare` in `~/.local/bin` and sets up its systemd user service, without sudo.
+Builds are for x86_64 and ARM64.
 
-```sh
-omarchy pkg add wayshare
-```
+Other ways to install:
 
-From source, after installing the [build prerequisites](docs/development.md#build-prerequisites):
-
-```sh
-git clone https://github.com/wesleygrimes/wayshare
-cd wayshare
-cargo install --locked --path .
-wayshare install-service
-```
+- With [mise](https://mise.jdx.dev): `mise use -g github:wesleygrimes/wayshare`, then
+  `wayshare install-service`
+- From the AUR: `yay -S wayshare`
+- On Omarchy: `omarchy pkg add wayshare`
+- [From source](docs/development.md#installing-from-source)
 
 ## Set up
 
@@ -62,18 +56,11 @@ Connection trouble? See [Troubleshooting](docs/troubleshooting.md).
 
 ## Upgrade
 
-With a package, upgrade as usual, then restart the service:
+Run the install command again. It restarts the service for you.
+
+With mise or a package, upgrade the usual way, then restart the service:
 
 ```sh
-systemctl --user restart wayshare
-```
-
-From source:
-
-```sh
-git pull
-cargo install --locked --path .
-wayshare install-service
 systemctl --user restart wayshare
 ```
 
@@ -81,12 +68,11 @@ systemctl --user restart wayshare
 
 ```sh
 systemctl --user disable --now wayshare
+rm -f ~/.local/bin/wayshare ~/.local/share/systemd/user/wayshare.service
 ```
 
-Then remove the package, or for a source install run `cargo uninstall wayshare` and delete
-`~/.local/share/systemd/user/wayshare.service`. Your
-password and settings stay in your config directory (usually `~/.config/wayshare`) until you
-delete it.
+If you installed with mise or a package, remove it that way too. Your password and settings
+stay in your config directory (usually `~/.config/wayshare`) until you delete it.
 
 ## More
 
