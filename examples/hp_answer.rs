@@ -1,7 +1,7 @@
 //! hp_answer <offer.bplist> <answer.bplist> [ssrc]: answer an AVCMediaStreamNegotiator offer.
 //! HP_SIZE=WxH sets the video stream size (default 1920x1080).
 use anyhow::{Context, Result};
-use ardd::hp::negotiation::{AnswerParams, Offer, answer};
+use wayshare::hp::negotiation::{AnswerParams, Offer, answer};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

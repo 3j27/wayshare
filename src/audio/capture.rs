@@ -76,7 +76,7 @@ impl MonitorCapture {
             minreq: u32::MAX,
             fragsize: SAMPLES_PER_FRAME * CHANNELS * 2,
         };
-        let app = CString::new("ardd").unwrap();
+        let app = CString::new("wayshare").unwrap();
         let stream = CString::new("screen sharing audio").unwrap();
         let dev = CString::new(device.unwrap_or(DEFAULT_MONITOR))?;
         let mut err = 0;

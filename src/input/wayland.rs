@@ -181,7 +181,7 @@ impl WaylandInput {
 }
 
 fn keymap_fd(text: &str) -> Result<OwnedFd> {
-    let raw = unsafe { libc::memfd_create(c"ardd-keymap".as_ptr(), libc::MFD_CLOEXEC) };
+    let raw = unsafe { libc::memfd_create(c"wayshare-keymap".as_ptr(), libc::MFD_CLOEXEC) };
     if raw < 0 {
         return Err(std::io::Error::last_os_error()).context("memfd_create");
     }

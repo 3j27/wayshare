@@ -1,4 +1,4 @@
-//! `$XDG_CONFIG_HOME/ardd/config.toml`. Every key is optional; the command line overrides it.
+//! `$XDG_CONFIG_HOME/wayshare/config.toml`. Every key is optional; the command line overrides it.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ pub struct Settings {
     pub listen: SocketAddr,
     /// Name shown in Screen Sharing and in Bonjour.
     pub name: Option<String>,
-    /// Defaults to `$XDG_CONFIG_HOME/ardd/srp-$USER`.
+    /// Defaults to `$XDG_CONFIG_HOME/wayshare/srp-$USER`.
     pub srp_file: Option<PathBuf>,
     /// Wayland output to share. Unset: animated test pattern.
     pub output: Option<String>,
@@ -138,9 +138,9 @@ impl Default for MdnsSettings {
 
 pub fn config_dir() -> Result<PathBuf> {
     match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir).join("ardd")),
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir).join("wayshare")),
         _ => Ok(
-            PathBuf::from(std::env::var_os("HOME").context("HOME not set")?).join(".config/ardd"),
+            PathBuf::from(std::env::var_os("HOME").context("HOME not set")?).join(".config/wayshare"),
         ),
     }
 }
@@ -298,6 +298,6 @@ mod tests {
 
     #[test]
     fn missing_explicit_file_is_an_error() {
-        assert!(Settings::load(Some(Path::new("/nonexistent/ardd.toml"))).is_err());
+        assert!(Settings::load(Some(Path::new("/nonexistent/wayshare.toml"))).is_err());
     }
 }

@@ -357,14 +357,14 @@ pub(crate) mod tests {
             1920,
             1080,
             &PixelFormat::NATIVE,
-            "ardd",
+            "wayshare",
             true,
             BASE_CLIENT_MESSAGES,
         );
         assert_eq!(&si[0..4], &[0x07, 0x80, 0x04, 0x38]);
         assert_eq!(&si[4..20], &PixelFormat::NATIVE.to_bytes());
         let name_len = u32::from_be_bytes(si[20..24].try_into().unwrap()) as usize;
-        assert_eq!(name_len, 22 + 4);
+        assert_eq!(name_len, 22 + 8);
         assert_eq!(si.len(), 24 + name_len);
         let field = &si[24..];
         assert_eq!(&field[0..2], &[0, 0]);
@@ -372,7 +372,7 @@ pub(crate) mod tests {
         assert_eq!(flags, 0x20);
         assert_eq!(flags & 0x08, 0);
         assert_eq!(&field[6..22], &server_cmds_bitmap(BASE_CLIENT_MESSAGES));
-        assert_eq!(&field[22..], b"ardd");
+        assert_eq!(&field[22..], b"wayshare");
     }
 
     #[test]

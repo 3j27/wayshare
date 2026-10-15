@@ -214,7 +214,7 @@ pub fn encode_display_info2(
 mod tests {
     use super::*;
 
-    const CAPTURE: &[u8] = include_bytes!("../../../samples/msg29-0.bin");
+    const CAPTURE: &[u8] = include_bytes!("../../tests/fixtures/msg29-0.bin");
 
     #[test]
     fn parses_capture() {

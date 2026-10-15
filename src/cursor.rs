@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn follows_inherits() {
-        let root = std::env::temp_dir().join(format!("ardd-cursor-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wayshare-cursor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("base/cursors")).unwrap();
         std::fs::create_dir_all(root.join("default")).unwrap();

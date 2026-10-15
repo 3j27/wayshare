@@ -12,9 +12,9 @@ use std::net::UdpSocket;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use ardd::audio::rtp::{AudioPacketizer, CLOCK_RATE, PAYLOAD_TYPE};
-use ardd::hp::rtcp::{self, RtcpEvent};
-use ardd::hp::srtp::{MASTER_LEN, SrtpContext, is_rtcp};
+use wayshare::audio::rtp::{AudioPacketizer, CLOCK_RATE, PAYLOAD_TYPE};
+use wayshare::hp::rtcp::{self, RtcpEvent};
+use wayshare::hp::srtp::{MASTER_LEN, SrtpContext, is_rtcp};
 
 fn json_field(json: &str, key: &str) -> Result<String> {
     let v: serde_json::Value = serde_json::from_str(json)?;
@@ -58,7 +58,7 @@ fn read_aus(path: &str) -> Result<Vec<Vec<u8>>> {
 #[cfg(target_os = "linux")]
 fn encode(out: &str, secs: f64, bitrate: u32, freq: f64, dbfs: f64, sbr: bool, bandwidth: u32) -> Result<()> {
     let amp = 32767.0 * 10f64.powf(dbfs / 20.0);
-    use ardd::audio::fdk::{AacEldEncoder, EncoderConfig};
+    use wayshare::audio::fdk::{AacEldEncoder, EncoderConfig};
     let mut enc = AacEldEncoder::new(&EncoderConfig { bitrate, sbr, bandwidth })?;
     println!("fdk ASC {:02x?} frame {}", enc.audio_specific_config(), enc.frame_length());
     let frames = (secs * 100.0) as usize;
@@ -95,7 +95,7 @@ fn encode(out: &str, secs: f64, bitrate: u32, freq: f64, dbfs: f64, sbr: bool, b
 
 #[cfg(target_os = "linux")]
 fn capture(secs: u64) -> Result<()> {
-    use ardd::audio::capture::MonitorCapture;
+    use wayshare::audio::capture::MonitorCapture;
     let mut cap = MonitorCapture::open(None)?;
     let mut pcm = [0i16; 960];
     for s in 0..secs {
@@ -111,7 +111,7 @@ fn capture(secs: u64) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn stream(dest: &str, secs: u64) -> Result<()> {
-    use ardd::audio::sender::{AudioParams, AudioSender};
+    use wayshare::audio::sender::{AudioParams, AudioSender};
     let mut s = AudioSender::start(AudioParams {
         peer: dest.parse()?,
         local_port: 0,

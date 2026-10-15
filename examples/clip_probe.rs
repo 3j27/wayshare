@@ -9,8 +9,8 @@
 fn main() -> anyhow::Result<()> {
     use std::time::{Duration, Instant};
 
-    use ardd::clipboard::wayland::{WaylandClipboard, data_control_globals};
-    use ardd::clipboard::{ClipContent, ClipboardBackend, mime};
+    use wayshare::clipboard::wayland::{WaylandClipboard, data_control_globals};
+    use wayshare::clipboard::{ClipContent, ClipboardBackend, mime};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let secs = || -> anyhow::Result<u64> { Ok(args.get(1).map(|s| s.parse()).transpose()?.unwrap_or(5)) };
@@ -33,8 +33,8 @@ fn main() -> anyhow::Result<()> {
             let cb = WaylandClipboard::spawn()?;
             std::thread::sleep(Duration::from_millis(300));
             cb.set(ClipContent(vec![
-                (mime::HTML.into(), b"<b>ardd synthetic</b>".to_vec()),
-                (mime::TEXT.into(), b"ardd synthetic \xe2\x98\x83".to_vec()),
+                (mime::HTML.into(), b"<b>wayshare synthetic</b>".to_vec()),
+                (mime::TEXT.into(), b"wayshare synthetic \xe2\x98\x83".to_vec()),
             ]))?;
             std::thread::sleep(Duration::from_millis(300));
             println!("own selection, offered {:?}", cb.offered());
@@ -49,7 +49,7 @@ fn main() -> anyhow::Result<()> {
             while Instant::now() < end {
                 if cb.take_data_request() {
                     println!("data requested; fulfilling");
-                    cb.set(ClipContent::text("ardd promised synthetic"))?;
+                    cb.set(ClipContent::text("wayshare promised synthetic"))?;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }

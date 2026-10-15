@@ -20,8 +20,8 @@ mod bench {
     use std::time::{Duration, Instant};
 
     use anyhow::Result;
-    use ardd::capture::{CaptureOptions, Capturer, Memory, Protocol, monotonic_now};
-    use ardd::encode::{Chroma, EncoderBackend, EncoderConfig, TILE_COUNT, X265Options};
+    use wayshare::capture::{CaptureOptions, Capturer, Memory, Protocol, monotonic_now};
+    use wayshare::encode::{Chroma, EncoderBackend, EncoderConfig, TILE_COUNT, X265Options};
 
     fn env<T: std::str::FromStr>(k: &str) -> Option<T> {
         std::env::var(k).ok()?.parse().ok()
@@ -43,8 +43,8 @@ mod bench {
     }
 
     fn source_bench(output: Option<&str>, seconds: f64) -> Result<()> {
-        use ardd::source::FrameSource;
-        let mut src = ardd::capture::CaptureSource::new(output)?;
+        use wayshare::source::FrameSource;
+        let mut src = wayshare::capture::CaptureSource::new(output)?;
         println!("CaptureSource {:?}", src.size());
         let (mut changed, mut polls, mut rects) = (0u64, 0u64, 0usize);
         let mut adv_ms = Vec::new();
@@ -88,7 +88,7 @@ mod bench {
     }
 
     fn consume(
-        rx: std::sync::mpsc::Receiver<Result<ardd::encode::EncodedFrame>>,
+        rx: std::sync::mpsc::Receiver<Result<wayshare::encode::EncodedFrame>>,
         start: Instant,
         dump_seconds: f64,
         mut dump: File,

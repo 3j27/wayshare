@@ -1,9 +1,9 @@
-# $XDG_CONFIG_HOME/ardd/config.toml (usually ~/.config/ardd/config.toml).
+# $XDG_CONFIG_HOME/wayshare/config.toml (usually ~/.config/wayshare/config.toml).
 # Every key is optional; the values shown are the defaults unless noted.
 
 listen = "0.0.0.0:5900"
 # name = "omarchy"                    # default: the host name
-# srp_file = "~/.config/ardd/srp-wesgrimes"   # default: srp-$USER next to this file
+# srp_file = "~/.config/wayshare/srp-wesgrimes"   # default: srp-$USER next to this file
 output = "HEADLESS-1"                 # default: unset (test pattern)
 resize = true                         # match the viewer's display mode, restore afterwards
 

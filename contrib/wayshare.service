@@ -1,11 +1,11 @@
 [Unit]
-Description=ardd Screen Sharing server
+Description=wayshare Screen Sharing server
 # Needs the Wayland session (capture, virtual input, Hyprland IPC).
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/bin/ardd
+ExecStart=%h/.local/bin/wayshare
 Restart=on-failure
 RestartSec=2
 Environment=RUST_LOG=info

@@ -79,14 +79,14 @@ mod tests {
 
     #[test]
     fn service_records() {
-        let s = services("omarchy (ardd)", "omarchy", 5900, Some("MacPro7,1")).unwrap();
-        assert_eq!(s[0].get_fullname(), "omarchy (ardd)._rfb._tcp.local.");
+        let s = services("omarchy (wayshare)", "omarchy", 5900, Some("MacPro7,1")).unwrap();
+        assert_eq!(s[0].get_fullname(), "omarchy (wayshare)._rfb._tcp.local.");
         assert_eq!(s[0].get_port(), 5900);
         assert_eq!(s[0].get_hostname(), "omarchy.local.");
         assert!(s[0].get_properties().is_empty());
         assert_eq!(
             s[1].get_fullname(),
-            "omarchy (ardd)._device-info._tcp.local."
+            "omarchy (wayshare)._device-info._tcp.local."
         );
         assert_eq!(s[1].get_property_val_str("model"), Some("MacPro7,1"));
         assert_eq!(services("x", "h.local", 1, None).unwrap().len(), 1);

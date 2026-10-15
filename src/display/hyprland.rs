@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn talks_to_a_fake_socket() {
         use std::os::unix::net::UnixListener;
-        let dir = std::env::temp_dir().join(format!("ardd-hypr-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wayshare-hypr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".socket.sock");
         let _ = std::fs::remove_file(&path);

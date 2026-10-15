@@ -80,24 +80,24 @@ mod tests {
         assert_eq!(misc_state_change(STATE_PASTEBOARD_UPDATED), [20, 0, 0, 4, 0, 1, 0, 2]);
     }
 
-    /// Cross-check with Apple's code: run `tools-harness/clipcheck pack /tmp/ardd-clip` first,
-    /// then this, then `clipcheck unpack /tmp/ardd-clip/server31.bin`.
+    /// Cross-check with Apple's code: run `tools-harness/clipcheck pack /tmp/wayshare-clip` first,
+    /// then this, then `clipcheck unpack /tmp/wayshare-clip/server31.bin`.
     #[test]
     #[ignore]
     fn apple_vectors() {
-        let dir = std::path::Path::new("/tmp/ardd-clip");
+        let dir = std::path::Path::new("/tmp/wayshare-clip");
         let raw = std::fs::read(dir.join("apple-packed.bin")).unwrap();
         let items = unpack(&raw).unwrap();
         assert_eq!(pack(&items), raw);
         let z = std::fs::read(dir.join("apple-compressed.bin")).unwrap();
         let ulen: u32 = std::fs::read_to_string(dir.join("apple-compressed.len")).unwrap().trim().parse().unwrap();
         let ViewerPasteboard::Data(c) = decode_viewer_send(0, ulen, &z).unwrap() else { panic!() };
-        assert_eq!(c.as_text().as_deref(), Some("hello ardd"));
+        assert_eq!(c.as_text().as_deref(), Some("hello wayshare"));
         assert_eq!(c.get(HTML), Some(&b"<b>hello</b>"[..]));
         let content = ClipContent(vec![
-            (super::super::mime::RTF.into(), b"{\\rtf1 rtf ardd}".to_vec()),
-            (HTML.into(), b"<i>html ardd</i>".to_vec()),
-            (TEXT.into(), "text ardd \u{2603}".as_bytes().to_vec()),
+            (super::super::mime::RTF.into(), b"{\\rtf1 rtf wayshare}".to_vec()),
+            (HTML.into(), b"<i>html wayshare</i>".to_vec()),
+            (TEXT.into(), "text wayshare \u{2603}".as_bytes().to_vec()),
         ]);
         std::fs::write(dir.join("server31.bin"), server_clipboard_data(9, &content)).unwrap();
     }

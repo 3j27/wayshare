@@ -1246,7 +1246,7 @@ mod tests {
         let mut client = TcpStream::connect(addr).await.unwrap();
         assert_eq!(drive_client(&mut client, "wes", "pw").await.unwrap(), 0);
         client.write_all(&[0x81]).await.unwrap();
-        client.write_all(include_bytes!("../../../samples/msg29-0.bin")).await.unwrap();
+        client.write_all(include_bytes!("../../tests/fixtures/msg29-0.bin")).await.unwrap();
         for _ in 0..100 {
             if log.has("configure 1") {
                 break;
@@ -1261,7 +1261,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn teardown_on_disconnect() {
         let log = Arc::new(Log::default());
-        let mut msgs = include_bytes!("../../../samples/msg29-0.bin").to_vec();
+        let mut msgs = include_bytes!("../../tests/fixtures/msg29-0.bin").to_vec();
         msgs.extend_from_slice(&[5, 0, 0, 1, 0, 1]);
         session_with(log.clone(), &msgs).await.unwrap();
         for e in [
@@ -1278,7 +1278,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn teardown_on_panic() {
         let log = Arc::new(Log::default());
-        let mut msgs = include_bytes!("../../../samples/msg29-0.bin").to_vec();
+        let mut msgs = include_bytes!("../../tests/fixtures/msg29-0.bin").to_vec();
         msgs.extend_from_slice(&[5, 0, 0x02, 0x9a, 0, 1]);
         let r = session_with(log.clone(), &msgs).await;
         assert!(r.unwrap_err().to_string().contains("panic"));
@@ -1333,7 +1333,7 @@ mod tests {
         let (mut client, server) = start(cfg).await.unwrap();
         let mut msgs = vec![2, 0, 0, 1];
         msgs.extend_from_slice(&ENC_DESKTOP_SIZE.to_be_bytes());
-        msgs.extend_from_slice(include_bytes!("../../../samples/msg29-0.bin"));
+        msgs.extend_from_slice(include_bytes!("../../tests/fixtures/msg29-0.bin"));
         let offer = |seed| StreamOffer {
             key_viewer_to_server: [seed; KEY_LEN],
             key_server_to_viewer: [seed; KEY_LEN],
@@ -1392,12 +1392,12 @@ mod tests {
         let mut msgs = vec![2, 0, 0, 2];
         msgs.extend_from_slice(&ENC_MEDIA_STREAM.to_be_bytes());
         msgs.extend_from_slice(&ENC_DESKTOP_SIZE.to_be_bytes());
-        msgs.extend_from_slice(include_bytes!("../../../samples/msg29-0.bin"));
+        msgs.extend_from_slice(include_bytes!("../../tests/fixtures/msg29-0.bin"));
         msgs.extend_from_slice(&media_config().encode());
         client.write_all(&msgs).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!log.has("hp stop"), "{:?}", log.0.lock().unwrap());
-        client.write_all(include_bytes!("../../../samples/msg29-0.bin")).await.unwrap();
+        client.write_all(include_bytes!("../../tests/fixtures/msg29-0.bin")).await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         let events = log.0.lock().unwrap().clone();
         assert_eq!(events, ["ports", "hp stop", "ports"]);

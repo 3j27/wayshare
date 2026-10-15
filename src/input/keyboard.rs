@@ -290,10 +290,10 @@ pub fn keymap_text(cfg: &KeyboardConfig, slots: &[(u32, u32)]) -> String {
     }
     format!(
         "xkb_keymap {{\n\
-         xkb_keycodes \"ardd\" {{\n    include \"evdev+aliases(qwerty)\"\n{keycodes}}};\n\
-         xkb_types \"ardd\" {{ include \"complete\" }};\n\
-         xkb_compat \"ardd\" {{ include \"complete\" }};\n\
-         xkb_symbols \"ardd\" {{\n    include \"pc+{base}+inet(evdev){level3}\"\n{symbols}}};\n\
+         xkb_keycodes \"wayshare\" {{\n    include \"evdev+aliases(qwerty)\"\n{keycodes}}};\n\
+         xkb_types \"wayshare\" {{ include \"complete\" }};\n\
+         xkb_compat \"wayshare\" {{ include \"complete\" }};\n\
+         xkb_symbols \"wayshare\" {{\n    include \"pc+{base}+inet(evdev){level3}\"\n{symbols}}};\n\
          }};\n"
     )
 }

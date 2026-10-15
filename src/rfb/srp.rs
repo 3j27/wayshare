@@ -445,7 +445,7 @@ pub(crate) mod tests {
         assert!(BufReader::new(&[0, 0, 0, 5, 1]).is_err());
     }
 
-    // Vectors from corecrypto's ccsrp client (ardd/tools/ccsrp-xcheck.c): salt 0102030405060708,
+    // Vectors from corecrypto's ccsrp client (wayshare/tools/ccsrp-xcheck.c): salt 0102030405060708,
     // SRP password "pass", server b = 0xab54a98ceb1f0ad2. One case has a 255-byte A, the other a
     // 255-byte premaster secret S, which pins down the PAD() rules.
     const XCHECK_B: [u8; 8] = [0xab, 0x54, 0xa9, 0x8c, 0xeb, 0x1f, 0x0a, 0xd2];

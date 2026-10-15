@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use ardd::auth::StaticPassword;
-use ardd::config::Settings;
-use ardd::rfb::clipboard::MemoryClipboard;
-use ardd::rfb::media::StubHpBackend;
-use ardd::rfb::srp::{self, VerifierRecord};
-use ardd::rfb::{self, AuthConfig, Config};
+use wayshare::auth::StaticPassword;
+use wayshare::config::Settings;
+use wayshare::rfb::clipboard::MemoryClipboard;
+use wayshare::rfb::media::StubHpBackend;
+use wayshare::rfb::srp::{self, VerifierRecord};
+use wayshare::rfb::{self, AuthConfig, Config};
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -27,12 +27,12 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct ServeArgs {
-    /// Config file (default: $XDG_CONFIG_HOME/ardd/config.toml). Flags override it.
+    /// Config file (default: $XDG_CONFIG_HOME/wayshare/config.toml). Flags override it.
     #[arg(long)]
     config: Option<PathBuf>,
     #[arg(long)]
     listen: Option<SocketAddr>,
-    /// SRP verifier file written by `ardd set-password` (security type 36).
+    /// SRP verifier file written by `wayshare set-password` (security type 36).
     #[arg(long)]
     srp_file: Option<PathBuf>,
     /// Username for the DH test password (security type 30, development only).
@@ -126,7 +126,7 @@ enum Command {
         /// Read the password from this file instead of prompting.
         #[arg(long)]
         password_file: Option<PathBuf>,
-        /// Defaults to $XDG_CONFIG_HOME/ardd/srp-<user>.
+        /// Defaults to $XDG_CONFIG_HOME/wayshare/srp-<user>.
         #[arg(long)]
         srp_file: Option<PathBuf>,
         #[arg(long, default_value_t = srp::DEFAULT_ITERATIONS)]
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     {
         let path = match srp_file {
             Some(p) => p,
-            None => ardd::config::default_srp_path(&user)?,
+            None => wayshare::config::default_srp_path(&user)?,
         };
         let password = read_password(password_file.as_deref())?;
         VerifierRecord::generate(&user, &password, iterations).save(&path)?;
@@ -198,7 +198,7 @@ fn hostname() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "ardd".into())
+        .unwrap_or_else(|| "wayshare".into())
 }
 
 async fn run(s: Settings) -> Result<()> {
@@ -207,7 +207,7 @@ async fn run(s: Settings) -> Result<()> {
     match VerifierRecord::load(&srp_path) {
         Ok(rec) => auth.srp = Some(rec),
         Err(e) if s.srp_file.is_some() || s.dev.dh_username.is_none() => {
-            return Err(e.context("run `ardd set-password --user <name>` first"));
+            return Err(e.context("run `wayshare set-password --user <name>` first"));
         }
         Err(_) => {}
     }
@@ -224,29 +224,29 @@ async fn run(s: Settings) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     if let Some(output) = &s.output {
-        cfg.frame_source = ardd::server_linux::capture_factory(Some(output.clone()));
-        cfg.cursor_source = ardd::server_linux::cursor_factory(Some(output.clone()));
-        match ardd::clipboard::wayland::WaylandClipboard::spawn() {
+        cfg.frame_source = wayshare::server_linux::capture_factory(Some(output.clone()));
+        cfg.cursor_source = wayshare::server_linux::cursor_factory(Some(output.clone()));
+        match wayshare::clipboard::wayland::WaylandClipboard::spawn() {
             Ok(cb) => {
-                let backend: Arc<dyn ardd::clipboard::ClipboardBackend> = Arc::new(cb);
-                cfg.clipboard = Some(Arc::new(ardd::clipboard::TextBridge::new(backend.clone())));
+                let backend: Arc<dyn wayshare::clipboard::ClipboardBackend> = Arc::new(cb);
+                cfg.clipboard = Some(Arc::new(wayshare::clipboard::TextBridge::new(backend.clone())));
                 cfg.clipboard_backend = Some(backend);
             }
             Err(e) => warn!("Wayland clipboard unavailable, text-only clipboard: {e:#}"),
         }
         if s.input.enabled {
-            cfg.input = Some(ardd::server_linux::input_factory(
+            cfg.input = Some(wayshare::server_linux::input_factory(
                 output.clone(),
                 s.keyboard()?,
             ));
         }
         if s.resize {
-            cfg.display = Some(Arc::new(ardd::server_linux::HyprDisplay::new(
+            cfg.display = Some(Arc::new(wayshare::server_linux::HyprDisplay::new(
                 output.clone(),
             )));
         }
         if s.hp.enabled && s.dev.hp_stub_dir.is_none() {
-            cfg.hp = Some(Arc::new(ardd::server_linux::LinuxHp::new(
+            cfg.hp = Some(Arc::new(wayshare::server_linux::LinuxHp::new(
                 Some(output.clone()),
                 s.hp.port,
                 s.video_encoder(),
@@ -269,7 +269,7 @@ async fn run(s: Settings) -> Result<()> {
         "starting"
     );
     let _mdns = if s.mdns.enabled {
-        match ardd::mdns::advertise(
+        match wayshare::mdns::advertise(
             &name,
             &host,
             s.listen.port(),

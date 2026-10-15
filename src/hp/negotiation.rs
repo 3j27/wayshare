@@ -512,8 +512,8 @@ pub fn answer(offer: &Offer, params: &AnswerParams) -> Result<Answer> {
 mod tests {
     use super::*;
 
-    const OFFER7: &[u8] = include_bytes!("../../../samples/offer7.bin");
-    const ANSWER7: &[u8] = include_bytes!("../../../samples/answer7.bin");
+    const OFFER7: &[u8] = include_bytes!("../../tests/fixtures/offer7.bin");
+    const ANSWER7: &[u8] = include_bytes!("../../tests/fixtures/answer7.bin");
 
     fn sample_blob(bplist: &[u8]) -> Vec<u8> {
         let d = Plist::from_reader(std::io::Cursor::new(bplist))

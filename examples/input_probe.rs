@@ -11,10 +11,10 @@
 fn main() -> anyhow::Result<()> {
     use std::time::Duration;
 
-    use ardd::display::{DisplayManager, hyprland::Hyprland};
-    use ardd::input::keyboard::{KeyboardConfig, KeyboardEngine};
-    use ardd::input::wayland::WaylandInput;
-    use ardd::input::{InputSink, PointerConfig, ScrollEvent};
+    use wayshare::display::{DisplayManager, hyprland::Hyprland};
+    use wayshare::input::keyboard::{KeyboardConfig, KeyboardEngine};
+    use wayshare::input::wayland::WaylandInput;
+    use wayshare::input::{InputSink, PointerConfig, ScrollEvent};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| -> anyhow::Result<u32> { Ok(args.get(i).ok_or_else(|| anyhow::anyhow!("missing arg {i}"))?.parse()?) };

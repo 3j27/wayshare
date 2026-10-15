@@ -131,7 +131,7 @@ impl Allocator {
         let page = 4096u64;
         let size = (stride as u64 * height as u64).next_multiple_of(page);
         unsafe {
-            let memfd = libc::memfd_create(c"ardd-capture".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING);
+            let memfd = libc::memfd_create(c"wayshare-capture".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING);
             if memfd < 0 {
                 return Err(std::io::Error::last_os_error()).context("memfd_create");
             }

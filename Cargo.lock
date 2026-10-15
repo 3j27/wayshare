@@ -85,43 +85,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "ardd"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "bytes",
- "clap",
- "flate2",
- "gbm",
- "glow",
- "hmac",
- "khronos-egl",
- "libc",
- "md-5",
- "mdns-sd",
- "num-bigint",
- "pbkdf2",
- "plist",
- "rand",
- "rpassword",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "socket2",
- "subtle",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1408,6 +1371,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be"
 dependencies = [
  "pkg-config",
+]
+
+[[package]]
+name = "wayshare"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "bytes",
+ "clap",
+ "flate2",
+ "gbm",
+ "glow",
+ "hmac",
+ "khronos-egl",
+ "libc",
+ "md-5",
+ "mdns-sd",
+ "num-bigint",
+ "pbkdf2",
+ "plist",
+ "rand",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "socket2",
+ "subtle",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

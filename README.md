@@ -1,7 +1,7 @@
-# ardd
+# wayshare
 
 Screen Sharing server for Linux (Wayland/Hyprland) that the stock macOS Screen Sharing.app
-connects to, including High Performance mode. Protocol notes live in `../notes/`.
+connects to, including High Performance mode.
 
 ## Setup
 
@@ -9,28 +9,28 @@ connects to, including High Performance mode. Protocol notes live in `../notes/`
 
    ```sh
    cargo build --release
-   install -m 755 target/release/ardd ~/.local/bin/ardd
+   install -m 755 target/release/wayshare ~/.local/bin/wayshare
    ```
 
-2. Store a login. ardd keeps an SRP verifier (salt and verifier), never the password:
+2. Store a login. wayshare keeps an SRP verifier (salt and verifier), never the password:
 
    ```sh
-   ardd set-password --user "$USER"      # prompts; writes ~/.config/ardd/srp-$USER (mode 0600)
+   wayshare set-password --user "$USER"      # prompts; writes ~/.config/wayshare/srp-$USER (mode 0600)
    ```
 
    Screen Sharing logs in with this user name and password (security type 36, no prompt
    about server identity).
 
-3. Configure: copy `contrib/config.example.toml` to `~/.config/ardd/config.toml` and set
+3. Configure: copy `contrib/config.example.toml` to `~/.config/wayshare/config.toml` and set
    `output` to the Wayland output to share. Command-line flags override the file
-   (`ardd --help`).
+   (`wayshare --help`).
 
 4. Run as a user service:
 
    ```sh
-   cp contrib/ardd.service ~/.config/systemd/user/
+   cp contrib/wayshare.service ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now ardd
+   systemctl --user enable --now wayshare
    ```
 
 5. Connect from a Mac: `vnc://<user>@<host>` in Finder (Go > Connect to Server) or Screen
@@ -43,7 +43,7 @@ connects to, including High Performance mode. Protocol notes live in `../notes/`
 |---|---|---|
 | TCP 5900 from the LAN | yes | RFB control connection |
 | UDP 5353 (mDNS) from the LAN | optional | lets Finder's sidebar and Screen Sharing list the machine |
-| UDP 5960/5962 | no | ardd sends media first, and the viewer's RTCP returns through connection tracking (verified with ufw's default deny on 2026-10-14) |
+| UDP 5960/5962 | no | wayshare sends media first, and the viewer's RTCP returns through connection tracking (verified with ufw's default deny on 2026-10-14) |
 
 With ufw:
 

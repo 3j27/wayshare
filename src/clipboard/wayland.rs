@@ -23,7 +23,7 @@ use super::mime::{self, ClipContent};
 use super::{ClipboardBackend, proto};
 
 /// Offered alongside our own data so we can recognise our selection when it comes back.
-const MARKER: &str = "application/x-ardd-selection";
+const MARKER: &str = "application/x-wayshare-selection";
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 const PROMISE_TIMEOUT: Duration = Duration::from_secs(5);
 
