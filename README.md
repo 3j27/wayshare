@@ -1,35 +1,36 @@
 # wayshare
 
 Share your Hyprland desktop with a Mac, using the Screen Sharing app it already has.
-High Performance mode works too. There's nothing to install on the Mac.
+There's nothing to install on the Mac, and its High Performance mode works too, for sharp,
+low-latency video and sound.
 
-Needs Hyprland 0.56 or newer.
+Needs Hyprland 0.56 or newer and systemd.
 
 ## Install
 
-**Arch-based distros**, from the AUR:
+From the AUR, on Arch-based distros:
 
 ```sh
 yay -S wayshare
 ```
 
-**Omarchy:**
+On Omarchy:
 
 ```sh
 omarchy pkg add wayshare
 ```
 
-**From source**, with Rust 1.89 or newer:
+From source, after installing the [build prerequisites](docs/development.md#build-prerequisites):
 
 ```sh
 git clone https://github.com/wesleygrimes/wayshare
 cd wayshare
 cargo build --release
-tools/install.sh          # or: mise run install
+tools/install.sh
 ```
 
-This puts `wayshare` in `/usr/local/bin` (it asks for sudo). Set `PREFIX` to install
-somewhere else.
+This puts `wayshare` in `/usr/local/bin` and asks for sudo. To install somewhere else, see
+[Installing from source](docs/development.md#installing-from-source).
 
 ## Set up
 
@@ -39,9 +40,8 @@ somewhere else.
    wayshare set-password --user "$USER"
    ```
 
-   wayshare stores a salted verifier, never the password itself.
-
-2. Tell wayshare which monitor to share. `hyprctl monitors` lists them.
+2. Tell wayshare which monitor to share. `hyprctl monitors` lists them; replace `DP-1` with
+   yours.
 
    ```sh
    mkdir -p ~/.config/wayshare
@@ -54,11 +54,14 @@ somewhere else.
    systemctl --user enable --now wayshare
    ```
 
+   On Omarchy that's all. Elsewhere, if wayshare doesn't come back after you log in again,
+   add [one line to `hyprland.conf`](docs/troubleshooting.md#the-service-doesnt-start-at-login).
+
 4. On the Mac, open Finder, choose **Go > Connect to Server** and enter `vnc://` followed
    by the Linux machine's address, like `vnc://192.168.1.20`. It also shows up in Finder's
    sidebar under **Network**.
 
-That's it. If something doesn't connect, see [Troubleshooting](docs/troubleshooting.md).
+Connection trouble? See [Troubleshooting](docs/troubleshooting.md).
 
 ## Upgrade
 
@@ -74,6 +77,7 @@ From source:
 git pull
 cargo build --release
 tools/install.sh
+systemctl --user daemon-reload
 systemctl --user restart wayshare
 ```
 
@@ -84,7 +88,8 @@ systemctl --user disable --now wayshare
 ```
 
 Then remove the package, or run `tools/install.sh --uninstall` for a source install. Your
-password and settings stay in `~/.config/wayshare` until you delete it.
+password and settings stay in your config directory (usually `~/.config/wayshare`) until you
+delete it.
 
 ## More
 

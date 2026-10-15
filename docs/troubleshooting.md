@@ -18,7 +18,7 @@ exec-once = systemctl --user start wayshare
 
 ## "wayshare needs Hyprland 0.56 or newer"
 
-Exactly that. Upgrade Hyprland.
+Upgrade Hyprland to 0.56 or newer.
 
 ## The Mac can't connect
 

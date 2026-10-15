@@ -16,8 +16,9 @@ vnc://192.168.1.20?quality=high&numVirtualDisplays=1
 
 wayshare picks an encoder when it starts:
 
-1. **VA-API**, when your GPU's driver can encode HEVC. Needs `libva` and the driver.
-2. **x265** otherwise. Needs `libx265` with API build 217.
+1. VA-API, when the driver for the first GPU (`/dev/dri/renderD128`) can encode HEVC. Needs
+   `libva` and that driver.
+2. x265 otherwise. Needs `libx265` with API build 217.
 
 The log says which one it chose:
 
@@ -33,13 +34,16 @@ High Performance mode disabled: no hardware HEVC encoder, and the libx265 fallba
 
 NVIDIA's NVENC isn't supported yet, so NVIDIA machines use x265.
 
-Audio needs `libfdk-aac` and a PulseAudio server (PipeWire's `pipewire-pulse` works). Without
-them video still works, and the log says `HP audio stopped`.
+Audio needs `libfdk-aac`, the `libpulse` client library, and a PulseAudio-compatible server
+such as PipeWire's `pipewire-pulse`. Without them video still works, and the log says
+`HP audio unavailable, continuing with video only`.
 
 ## How it behaves
 
 - One High Performance viewer at a time. Later viewers get Standard mode, except a reconnect
   from the same address, which takes over.
-- If the viewer goes quiet for 10 seconds, the session falls back to Standard mode.
-- When a session ends, even from a crash or a dropped network, wayshare releases held keys
-  and buttons, stops the stream and restores the monitor.
+- If the viewer sends no feedback within 15 seconds of starting, or goes quiet for 10 seconds
+  later, the session falls back to Standard mode.
+- When a session ends, including a dropped network or a session that crashes, wayshare
+  releases held keys and buttons, stops the stream and restores the monitor. If the whole
+  process is killed, the monitor keeps the Mac's mode until wayshare runs again.

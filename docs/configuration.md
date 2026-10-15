@@ -25,8 +25,17 @@ you're connected, and puts it back when you disconnect.
 
 ## Login
 
-`wayshare set-password --user NAME` writes `~/.config/wayshare/srp-NAME`. Run it again to
-change the password. To keep the file somewhere else, set `srp_file`.
+`wayshare set-password --user NAME` stores a salted verifier, never the password, in
+`srp-NAME` next to the config file. Run it again to change the password.
+
+wayshare looks for `srp-$USER` unless told otherwise, so a login name other than your Linux
+user name needs `srp_file` too:
+
+```toml
+srp_file = "/home/alice/.config/wayshare/srp-studio"
+```
+
+Paths in the config must be absolute; `~` isn't expanded.
 
 ## Keyboard
 

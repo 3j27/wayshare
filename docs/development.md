@@ -6,6 +6,29 @@ cargo test
 
 Tests run on Linux and macOS. Capture, input and encoding only build on Linux.
 
+## Build prerequisites
+
+Rust 1.89 or newer ([rustup](https://rustup.rs) or your distro's package), a C linker,
+`pkg-config`, and the EGL and GBM development files:
+
+| Distro | Packages |
+|---|---|
+| Arch | `base-devel mesa libglvnd` |
+| Debian, Ubuntu | `build-essential pkg-config libegl-dev libgbm-dev` |
+| Fedora | `gcc pkgconf-pkg-config libglvnd-devel mesa-libgbm-devel` |
+
+## Installing from source
+
+`tools/install.sh` installs the release build under `PREFIX` (default `/usr/local`, using sudo
+when it can't write there). For a user-local install with no sudo:
+
+```sh
+PREFIX=$HOME/.local SYSTEMD_USER_UNIT_DIR=$HOME/.local/share/systemd/user tools/install.sh
+```
+
+Pass the same variables when you upgrade or run `tools/install.sh --uninstall`. After
+upgrading, run `systemctl --user daemon-reload` before restarting the service.
+
 ## mise
 
 [mise](https://mise.jdx.dev) is optional. It reads the toolchain pin from
