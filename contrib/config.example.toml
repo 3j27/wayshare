@@ -1,0 +1,27 @@
+# $XDG_CONFIG_HOME/ardd/config.toml (usually ~/.config/ardd/config.toml).
+# Every key is optional; the values shown are the defaults unless noted.
+
+listen = "0.0.0.0:5900"
+# name = "omarchy"                    # default: the host name
+# srp_file = "~/.config/ardd/srp-wesgrimes"   # default: srp-$USER next to this file
+output = "HEADLESS-1"                 # default: unset (test pattern)
+resize = true                         # match the viewer's display mode, restore afterwards
+
+[hp]
+enabled = true
+port = 5960                           # video; audio uses port + 2
+# bitrate = 40000000
+encoder = "auto"                      # auto | vaapi | x265
+chroma = "420"                        # "444" needs encoder = "x265"
+audio = true                          # stream the default sink monitor (AAC-ELD)
+
+[input]
+enabled = true
+command_key = "super"                 # super (Omarchy binds) | ctrl | alt | altgr
+option_key = "alt"
+layout = "us"
+variant = ""
+
+[mdns]
+enabled = true
+# device_model = "MacPro7,1"          # Finder icon
