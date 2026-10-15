@@ -24,6 +24,19 @@ use crate::source::{CursorImage, CursorSource, Frame, FrameSource};
 
 /// Picks the encoder backend before the capturer exists; the capturer reports the node it uses.
 const RENDER_NODE: &str = "/dev/dri/renderD128";
+
+/// The encoder HP sessions will use, or why there is none.
+pub fn hp_encoder(cfg: &EncoderConfig) -> Result<EncoderBackend> {
+    let node = std::path::Path::new(RENDER_NODE);
+    let backend = EncoderBackend::auto(node, cfg);
+    let r = backend.check(node);
+    if cfg.backend.is_none() && backend == EncoderBackend::X265 {
+        r.context("no hardware HEVC encoder, and the libx265 fallback is unusable")?;
+    } else {
+        r?;
+    }
+    Ok(backend)
+}
 const FIRST_RTCP_TIMEOUT: Duration = Duration::from_secs(15);
 const RTCP_SILENCE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The viewer repeats FIR (one per tile, every ~250 ms) until a refresh decodes; one refresh

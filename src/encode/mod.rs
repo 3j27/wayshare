@@ -243,6 +243,19 @@ impl EncoderBackend {
         }
     }
 
+    pub fn check(self, render_node: &std::path::Path) -> anyhow::Result<()> {
+        match self {
+            Self::Vaapi => anyhow::ensure!(
+                vaapi::hevc_encode_available(render_node),
+                "no VAAPI HEVC encoder on {}",
+                render_node.display()
+            ),
+            Self::X265 => x265::check().map_err(anyhow::Error::msg)?,
+            Self::Nvenc => anyhow::bail!("NVENC backend not implemented"),
+        }
+        Ok(())
+    }
+
     /// Capture buffer placement this backend reads efficiently.
     pub fn capture_memory(self) -> crate::capture::Memory {
         match self {

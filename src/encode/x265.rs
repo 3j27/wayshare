@@ -430,7 +430,7 @@ fn api() -> Result<&'static Api, String> {
     addr.clone().map(|a| unsafe { &*(a as *const Api) })
 }
 
-/// Whether a libx265 with the supported API can be loaded.
-pub fn available() -> bool {
-    api().is_ok()
+/// Why libx265 can't be used, if it can't.
+pub fn check() -> Result<(), String> {
+    api().map(|_| ())
 }

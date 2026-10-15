@@ -247,14 +247,20 @@ async fn run(s: Settings) -> Result<()> {
             )));
         }
         if s.hp.enabled && s.dev.hp_stub_dir.is_none() {
-            cfg.hp = Some(Arc::new(wayshare::server_linux::LinuxHp::new(
-                Some(output.clone()),
-                s.hp.port,
-                s.video_encoder(),
-                s.hp.bitrate.is_some(),
-                s.hp.audio,
-                s.dev.hp_swap_keys,
-            )));
+            match wayshare::server_linux::hp_encoder(&s.video_encoder()) {
+                Ok(backend) => {
+                    info!(?backend, "HP encoder");
+                    cfg.hp = Some(Arc::new(wayshare::server_linux::LinuxHp::new(
+                        Some(output.clone()),
+                        s.hp.port,
+                        s.video_encoder(),
+                        s.hp.bitrate.is_some(),
+                        s.hp.audio,
+                        s.dev.hp_swap_keys,
+                    )));
+                }
+                Err(e) => warn!("High Performance mode disabled: {e:#}"),
+            }
         }
     }
     #[cfg(not(target_os = "linux"))]
