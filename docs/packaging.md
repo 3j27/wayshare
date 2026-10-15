@@ -15,18 +15,11 @@ development files (`mesa` and `libglvnd` on Arch). The minimum Rust is 1.89 (`ru
 ## Install
 
 ```sh
-DESTDIR="$pkgdir" PREFIX=/usr tools/install.sh
+install -Dm755 target/release/wayshare "$pkgdir/usr/bin/wayshare"
+sed 's|@bindir@|/usr/bin|' contrib/wayshare.service.in > wayshare.service
+install -Dm644 wayshare.service "$pkgdir/usr/lib/systemd/user/wayshare.service"
+install -Dm644 contrib/config.example.toml "$pkgdir/usr/share/doc/wayshare/config.example.toml"
 ```
-
-| File | Installed to |
-|---|---|
-| binary | `$PREFIX/bin/wayshare` |
-| systemd user unit | `$PREFIX/lib/systemd/user/wayshare.service` |
-| example config | `$PREFIX/share/doc/wayshare/config.example.toml` |
-
-The unit is rendered from `contrib/wayshare.service.in` with `ExecStart=$PREFIX/bin/wayshare`.
-`DESTDIR` never ends up in it. `SYSTEMD_USER_UNIT_DIR`, `BINDIR` and `DOCDIR` override the
-defaults.
 
 Don't enable the unit globally. Each user runs `systemctl --user enable --now wayshare` after
 setting a password.

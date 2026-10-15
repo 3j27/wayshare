@@ -19,15 +19,13 @@ Rust 1.89 or newer ([rustup](https://rustup.rs) or your distro's package), a C l
 
 ## Installing from source
 
-`tools/install.sh` installs the release build under `PREFIX` (default `/usr/local`, using sudo
-when it can't write there). For a user-local install with no sudo:
-
 ```sh
-PREFIX=$HOME/.local SYSTEMD_USER_UNIT_DIR=$HOME/.local/share/systemd/user tools/install.sh
+cargo install --locked --path .
+wayshare install-service
 ```
 
-Pass the same variables when you upgrade or run `tools/install.sh --uninstall`. After
-upgrading, run `systemctl --user daemon-reload` before restarting the service.
+This puts `wayshare` in `~/.cargo/bin` and its unit in `~/.local/share/systemd/user`. To
+upgrade, run both again, then `systemctl --user restart wayshare`.
 
 ## mise
 
@@ -38,8 +36,6 @@ upgrading, run `systemctl --user daemon-reload` before restarting the service.
 |---|---|
 | `mise run build` | release build |
 | `mise run test` | `cargo test` |
-| `mise run install` | build, then `tools/install.sh` |
-| `mise run uninstall` | `tools/install.sh --uninstall` |
 | `mise run gen-vaapi-sys` | regenerate the libva bindings (Linux) |
 
 ## Bindings

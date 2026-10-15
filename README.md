@@ -25,12 +25,9 @@ From source, after installing the [build prerequisites](docs/development.md#buil
 ```sh
 git clone https://github.com/wesleygrimes/wayshare
 cd wayshare
-cargo build --release
-tools/install.sh
+cargo install --locked --path .
+wayshare install-service
 ```
-
-This puts `wayshare` in `/usr/local/bin` and asks for sudo. To install somewhere else, see
-[Installing from source](docs/development.md#installing-from-source).
 
 ## Set up
 
@@ -75,9 +72,8 @@ From source:
 
 ```sh
 git pull
-cargo build --release
-tools/install.sh
-systemctl --user daemon-reload
+cargo install --locked --path .
+wayshare install-service
 systemctl --user restart wayshare
 ```
 
@@ -87,7 +83,8 @@ systemctl --user restart wayshare
 systemctl --user disable --now wayshare
 ```
 
-Then remove the package, or run `tools/install.sh --uninstall` for a source install. Your
+Then remove the package, or for a source install run `cargo uninstall wayshare` and delete
+`~/.local/share/systemd/user/wayshare.service`. Your
 password and settings stay in your config directory (usually `~/.config/wayshare`) until you
 delete it.
 

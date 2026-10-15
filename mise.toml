@@ -16,11 +16,3 @@ run = "cargo test"
 description = "Regenerate the libva bindings (Linux, needs libva headers and clang)"
 run = "tools/gen-vaapi-sys.sh > src/encode/vaapi/sys.rs"
 
-[tasks.install]
-description = "Install the release build (PREFIX defaults to /usr/local)"
-depends = ["build"]
-run = "tools/install.sh"
-
-[tasks.uninstall]
-description = "Remove what install put in place"
-run = "tools/install.sh --uninstall"
