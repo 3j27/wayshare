@@ -60,3 +60,7 @@ sudo ufw allow from 192.168.1.0/24 to any port 5353 proto udp   # optional, Bonj
   Standard mode.
 - Every session exit, including a crash or a dropped network (TCP keepalive notices within about
   30 s), releases held keys and buttons, stops HP media and restores the output's mode.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
