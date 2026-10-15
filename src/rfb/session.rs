@@ -878,6 +878,7 @@ impl Session {
             return Ok(());
         }
         warn!("HP media stopped; falling back to Standard mode");
+        blocking(|| hp.stop(self.id));
         self.media_active = false;
         self.out.send(&media::error_update(3, 0)).await?;
         self.pending = Some((0, 0, self.fb_size.0, self.fb_size.1));
@@ -1489,6 +1490,28 @@ mod tests {
         let at = got.windows(err.len()).position(|w| w == err).expect("no media error");
         let raw = [0, 0, 0, 0, 0, 64, 0, 48, 0, 0, 0, 0];
         assert!(got[at..].windows(raw.len()).any(|w| w == raw), "no Standard update");
+        drop(client);
+        let _ = server.await.unwrap();
+    }
+
+    /// Falling back to Standard stops what is left of the HP backend, such as audio.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hp_fallback_stops_backend() {
+        let log = Arc::new(Log::default());
+        let hp = Arc::new(ActiveHp::new(log.clone()));
+        let mut cfg = test_config();
+        cfg.hp = Some(hp.clone());
+        let (mut client, server) = start(cfg).await.unwrap();
+        let mut msgs = vec![2, 0, 0, 1];
+        msgs.extend_from_slice(&ENC_MEDIA_STREAM.to_be_bytes());
+        msgs.extend_from_slice(&media_config().encode());
+        client.write_all(&msgs).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hp.1.store(false, std::sync::atomic::Ordering::Relaxed);
+        let got = read_for(&mut client, Duration::from_millis(300)).await;
+        let err = media::error_update(3, 0);
+        assert!(got.windows(err.len()).any(|w| w == err), "no fallback");
+        assert!(log.has("hp stop"), "{:?}", log.0.lock().unwrap());
         drop(client);
         let _ = server.await.unwrap();
     }
