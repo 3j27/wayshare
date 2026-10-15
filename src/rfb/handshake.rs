@@ -207,8 +207,9 @@ where
     let username = if userid.is_empty() { authid } else { userid };
 
     // An unknown user gets a throwaway verifier so the failure looks like a bad password.
+    let known = username == rec.username;
     let decoy;
-    let rec = if username == rec.username {
+    let rec = if known {
         rec
     } else {
         decoy = VerifierRecord::generate(&username, b"", rec.iterations);
@@ -235,7 +236,11 @@ where
     r.finish()?;
     debug!(a_len = a.len(), m1_len = m1.len(), %options, civ_len = civ.len(), "SRP step 3");
 
-    let verified = match server.verify(&a, &m1) {
+    let result = server.verify(&a, &m1).and_then(|v| {
+        ensure!(known, "unknown user");
+        Ok(v)
+    });
+    let verified = match result {
         Ok(v) => v,
         Err(e) => {
             stream.write_all(&[0, 0, 0, 1, 0]).await?;
@@ -574,7 +579,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn srp_handshake_failures() {
-        for (user, pass) in [("wes", "nope"), ("bob", "pw")] {
+        for (user, pass) in [("wes", "nope"), ("bob", "pw"), ("bob", "")] {
             let (mut client, mut server) = tokio::io::duplex(4096);
             let auth = both_config();
             let srv = tokio::spawn(async move {

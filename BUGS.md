@@ -2,16 +2,6 @@
 
 Review date: 2026-10-15. Reviewed the initial implementation; the repository has no commits yet.
 
-## P1: Unknown users can authenticate with an empty password
-
-Location: `src/rfb/handshake.rs:214`.
-
-The SRP handshake generates a decoy verifier from an empty password for unknown users,
-then accepts a matching proof without rejecting the unknown username. An isolated test
-returned authentication success (`0`) for `bob` with an empty password.
-
-Unknown users must fail authentication regardless of proof validity.
-
 ## P2: Unauthenticated connections hide the host cursor
 
 Location: `src/rfb/session.rs:49`.
