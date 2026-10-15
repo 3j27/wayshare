@@ -33,6 +33,7 @@ gbm = { version = "0.18", default-features = false }
 glow = "0.18"
 khronos-egl = { version = "6", features = ["static"] }
 libc = "0.2.190"
+libloading = "0.9.0"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

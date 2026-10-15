@@ -10,10 +10,10 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::ptr;
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use super::hevc::{self, RpsEntry, SeqConfig, SliceHeader, SliceType};
 use super::plan::{PicKind, TilePic};
@@ -93,13 +93,14 @@ struct Display {
 
 impl Display {
     fn open(node: &Path) -> Result<Self> {
+        load()?;
         let fd = OpenOptions::new().read(true).write(true).open(node).with_context(|| format!("open {}", node.display()))?;
-        let dpy = unsafe { vaGetDisplayDRM(fd.as_raw_fd()) };
+        let dpy = unsafe { va().vaGetDisplayDRM(fd.as_raw_fd()) };
         if dpy.is_null() {
             bail!("vaGetDisplayDRM failed");
         }
         let (mut maj, mut min) = (0, 0);
-        check(unsafe { vaInitialize(dpy, &mut maj, &mut min) }, "vaInitialize")?;
+        check(unsafe { va().vaInitialize(dpy, &mut maj, &mut min) }, "vaInitialize")?;
         Ok(Self { dpy, _fd: fd })
     }
 
@@ -107,7 +108,7 @@ impl Display {
         let mut eps = [0 as c_int; 32];
         let mut n = 0;
         let r = unsafe {
-            vaQueryConfigEntrypoints(self.dpy, VAProfile::VAProfileHEVCMain, eps.as_mut_ptr().cast(), &mut n)
+            va().vaQueryConfigEntrypoints(self.dpy, VAProfile::VAProfileHEVCMain, eps.as_mut_ptr().cast(), &mut n)
         };
         let eps = &eps[..n.clamp(0, 32) as usize];
         if r != 0 {
@@ -124,7 +125,7 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        unsafe { vaTerminate(self.dpy) };
+        unsafe { va().vaTerminate(self.dpy) };
     }
 }
 
@@ -194,7 +195,7 @@ impl Session {
             VAConfigAttrib { type_: VAConfigAttribType::VAConfigAttribEncPackedHeaders, value: 0 },
         ];
         check(
-            unsafe { vaGetConfigAttributes(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3) },
+            unsafe { va().vaGetConfigAttributes(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3) },
             "vaGetConfigAttributes",
         )?;
         let packed = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_SLICE;
@@ -237,20 +238,20 @@ impl Session {
         let (cw, ch) = (s.seq.coded_width(), s.seq.coded_height());
         unsafe {
             check(
-                vaCreateConfig(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3, &mut s.enc_config),
-                "vaCreateConfig(HEVC encode)",
+                va().vaCreateConfig(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3, &mut s.enc_config),
+                "va().vaCreateConfig(HEVC encode)",
             )?;
             check(
-                vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.inputs.as_mut_ptr(), s.inputs.len() as u32, ptr::null_mut(), 0),
+                va().vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.inputs.as_mut_ptr(), s.inputs.len() as u32, ptr::null_mut(), 0),
                 "create input surfaces",
             )?;
             check(
-                vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.recon.as_mut_ptr(), RECON_SURFACES as u32, ptr::null_mut(), 0),
+                va().vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.recon.as_mut_ptr(), RECON_SURFACES as u32, ptr::null_mut(), 0),
                 "create reconstructed surfaces",
             )?;
             let mut targets: Vec<VASurfaceID> = s.inputs.iter().chain(&s.recon).copied().collect();
             check(
-                vaCreateContext(
+                va().vaCreateContext(
                     dpy,
                     s.enc_config,
                     cw as c_int,
@@ -260,22 +261,22 @@ impl Session {
                     targets.len() as c_int,
                     &mut s.enc_ctx,
                 ),
-                "vaCreateContext(HEVC encode)",
+                "va().vaCreateContext(HEVC encode)",
             )?;
             let coded_size = cw * ch * 3 / 2 + (1 << 16);
             for c in &mut s.coded {
                 check(
-                    vaCreateBuffer(dpy, s.enc_ctx, VABufferType::VAEncCodedBufferType, coded_size, 1, ptr::null_mut(), c),
+                    va().vaCreateBuffer(dpy, s.enc_ctx, VABufferType::VAEncCodedBufferType, coded_size, 1, ptr::null_mut(), c),
                     "create coded buffer",
                 )?;
             }
             check(
-                vaCreateConfig(dpy, VAProfile::VAProfileNone, VAEntrypoint::VAEntrypointVideoProc, ptr::null_mut(), 0, &mut s.vpp_config),
-                "vaCreateConfig(VideoProc)",
+                va().vaCreateConfig(dpy, VAProfile::VAProfileNone, VAEntrypoint::VAEntrypointVideoProc, ptr::null_mut(), 0, &mut s.vpp_config),
+                "va().vaCreateConfig(VideoProc)",
             )?;
             check(
-                vaCreateContext(dpy, s.vpp_config, cw as c_int, ch as c_int, 0, ptr::null_mut(), 0, &mut s.vpp_ctx),
-                "vaCreateContext(VideoProc)",
+                va().vaCreateContext(dpy, s.vpp_config, cw as c_int, ch as c_int, 0, ptr::null_mut(), 0, &mut s.vpp_ctx),
+                "va().vaCreateContext(VideoProc)",
             )?;
         }
         s.collector = Some(Collector::spawn(Dpy(dpy))?);
@@ -299,7 +300,7 @@ impl Session {
         let surface = unsafe { import_dmabuf(self.dpy(), buf)? };
         if self.imports.len() >= MAX_IMPORTS {
             let (_, mut old) = self.imports.remove(0);
-            unsafe { vaDestroySurfaces(self.dpy(), &mut old, 1) };
+            unsafe { va().vaDestroySurfaces(self.dpy(), &mut old, 1) };
         }
         self.imports.push((buf.id, surface));
         Ok(surface)
@@ -330,7 +331,7 @@ impl Session {
         p.output_color_properties.matrix_coefficients = 1;
         let buf = self.buffer(self.vpp_ctx, VABufferType::VAProcPipelineParameterBufferType, &mut p)?;
         let r = self.picture(self.vpp_ctx, dst, &[buf]);
-        unsafe { vaDestroyBuffer(self.dpy(), buf) };
+        unsafe { va().vaDestroyBuffer(self.dpy(), buf) };
         r
     }
 
@@ -340,17 +341,17 @@ impl Session {
 
     fn raw_buffer(&self, ctx: VAContextID, ty: VABufferType, data: *mut c_void, size: usize) -> Result<VABufferID> {
         let mut id = VA_INVALID_ID;
-        check(unsafe { vaCreateBuffer(self.dpy(), ctx, ty, size as u32, 1, data, &mut id) }, "vaCreateBuffer")?;
+        check(unsafe { va().vaCreateBuffer(self.dpy(), ctx, ty, size as u32, 1, data, &mut id) }, "vaCreateBuffer")?;
         Ok(id)
     }
 
     fn picture(&self, ctx: VAContextID, target: VASurfaceID, bufs: &[VABufferID]) -> Result<()> {
         let dpy = self.dpy();
         unsafe {
-            check(vaBeginPicture(dpy, ctx, target), "vaBeginPicture")?;
+            check(va().vaBeginPicture(dpy, ctx, target), "vaBeginPicture")?;
             let mut b = bufs.to_vec();
-            let r = check(vaRenderPicture(dpy, ctx, b.as_mut_ptr(), b.len() as c_int), "vaRenderPicture");
-            let e = check(vaEndPicture(dpy, ctx), "vaEndPicture");
+            let r = check(va().vaRenderPicture(dpy, ctx, b.as_mut_ptr(), b.len() as c_int), "vaRenderPicture");
+            let e = check(va().vaEndPicture(dpy, ctx), "vaEndPicture");
             r.and(e)
         }
     }
@@ -533,7 +534,7 @@ impl Session {
             self.picture(self.enc_ctx, input, &bufs)
         })();
         for b in bufs {
-            unsafe { vaDestroyBuffer(self.dpy(), b) };
+            unsafe { va().vaDestroyBuffer(self.dpy(), b) };
         }
         r?;
         self.latest[t] = Some(Ref { surface: recon, poc });
@@ -594,7 +595,7 @@ impl Backend for Session {
             for (i, &p) in pics.iter().enumerate() {
                 let (input, coded) = (self.inputs[slot * TILE_COUNT + p.tile], self.coded[slot * TILE_COUNT + i]);
                 if converted.is_none() {
-                    check(unsafe { vaSyncSurface(self.dpy(), input) }, "vaSyncSurface")?;
+                    check(unsafe { va().vaSyncSurface(self.dpy(), input) }, "vaSyncSurface")?;
                 }
                 if i == 0 {
                     job.submitted = Instant::now();
@@ -662,23 +663,23 @@ impl Drop for Session {
         let dpy = self.dpy();
         unsafe {
             for (_, mut s) in self.imports.drain(..) {
-                vaDestroySurfaces(dpy, &mut s, 1);
+                va().vaDestroySurfaces(dpy, &mut s, 1);
             }
             for &b in &self.coded {
                 if b != VA_INVALID_ID {
-                    vaDestroyBuffer(dpy, b);
+                    va().vaDestroyBuffer(dpy, b);
                 }
             }
             for ctx in [self.enc_ctx, self.vpp_ctx] {
                 if ctx != VA_INVALID_ID {
-                    vaDestroyContext(dpy, ctx);
+                    va().vaDestroyContext(dpy, ctx);
                 }
             }
-            vaDestroySurfaces(dpy, self.inputs.as_mut_ptr(), self.inputs.len() as c_int);
-            vaDestroySurfaces(dpy, self.recon.as_mut_ptr(), RECON_SURFACES as c_int);
+            va().vaDestroySurfaces(dpy, self.inputs.as_mut_ptr(), self.inputs.len() as c_int);
+            va().vaDestroySurfaces(dpy, self.recon.as_mut_ptr(), RECON_SURFACES as c_int);
             for cfg in [self.enc_config, self.vpp_config] {
                 if cfg != VA_INVALID_ID {
-                    vaDestroyConfig(dpy, cfg);
+                    va().vaDestroyConfig(dpy, cfg);
                 }
             }
         }
@@ -706,7 +707,7 @@ impl Session {
                 let mut d: VADRMPRIMESurfaceDescriptor = unsafe { std::mem::zeroed() };
                 check(
                     unsafe {
-                        vaExportSurfaceHandle(
+                        va().vaExportSurfaceHandle(
                             self.dpy(),
                             self.inputs[slot * TILE_COUNT + t],
                             VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
@@ -842,7 +843,7 @@ impl Drop for Collector {
 /// which would otherwise block submission of the next frame.
 unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
     loop {
-        match unsafe { vaSyncBuffer(dpy, buf, 1_000_000) } {
+        match unsafe { va().vaSyncBuffer(dpy, buf, 1_000_000) } {
             0 => break,
             s if s == VA_STATUS_ERROR_TIMEDOUT as VAStatus => continue,
             s => check(s, "vaSyncBuffer")?,
@@ -851,13 +852,13 @@ unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     unsafe {
         let mut seg: *mut c_void = ptr::null_mut();
-        check(vaMapBuffer(dpy, buf, &mut seg), "map coded buffer")?;
+        check(va().vaMapBuffer(dpy, buf, &mut seg), "map coded buffer")?;
         while !seg.is_null() {
             let s = &*(seg as *const VACodedBufferSegment);
             data.extend_from_slice(std::slice::from_raw_parts(s.buf as *const u8, s.size as usize));
             seg = s.next;
         }
-        vaUnmapBuffer(dpy, buf);
+        va().vaUnmapBuffer(dpy, buf);
     }
     Ok(data)
 }
@@ -866,11 +867,24 @@ fn rect(y: u32, height: u32, width: u32) -> VARectangle {
     VARectangle { x: 0, y: y as i16, width: width as u16, height: height as u16 }
 }
 
+static VA: OnceLock<Result<Va, String>> = OnceLock::new();
+
+fn load() -> Result<&'static Va> {
+    VA.get_or_init(|| unsafe { Va::new("libva-drm.so.2") }.map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| anyhow!("load libva: {e}"))
+}
+
+/// Only valid once `Display::open` has loaded libva.
+fn va() -> &'static Va {
+    VA.get().and_then(|r| r.as_ref().ok()).expect("libva not loaded")
+}
+
 fn check(status: VAStatus, what: &str) -> Result<()> {
     if status == 0 {
         return Ok(());
     }
-    let msg = unsafe { CStr::from_ptr(vaErrorStr(status)) }.to_string_lossy();
+    let msg = unsafe { CStr::from_ptr(va().vaErrorStr(status)) }.to_string_lossy();
     bail!("{what}: {msg} ({status})")
 }
 
@@ -928,7 +942,7 @@ unsafe fn import_dmabuf(dpy: VADisplay, buf: &DmabufBuffer) -> Result<VASurfaceI
     let mut surface = VA_INVALID_SURFACE;
     check(
         unsafe {
-            vaCreateSurfaces(dpy, VA_RT_FORMAT_RGB32, buf.width, buf.height, &mut surface, 1, attribs.as_mut_ptr(), 2)
+            va().vaCreateSurfaces(dpy, VA_RT_FORMAT_RGB32, buf.width, buf.height, &mut surface, 1, attribs.as_mut_ptr(), 2)
         },
         "import dmabuf as VA surface",
     )?;

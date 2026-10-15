@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Regenerates src/encode/vaapi/sys.rs with bindgen-cli 0.73 against libva 2.24 headers.
+# Run on Linux with libva and clang installed: tools/gen-vaapi-sys.sh > src/encode/vaapi/sys.rs
+set -euo pipefail
+
+FUNCTIONS="
+  vaBeginPicture vaCreateBuffer vaCreateConfig vaCreateContext
+  vaCreateSurfaces vaDestroyBuffer vaDestroyConfig vaDestroyContext
+  vaDestroySurfaces vaEndPicture vaErrorStr vaExportSurfaceHandle
+  vaGetConfigAttributes vaGetDisplayDRM vaInitialize vaMapBuffer
+  vaQueryConfigEntrypoints vaRenderPicture vaSyncBuffer vaSyncSurface
+  vaTerminate vaUnmapBuffer
+"
+
+TYPES="
+  _VABlendState _VACodedBufferSegment _VAConfigAttrib _VADRMPRIMESurfaceDescriptor
+  _VAEncMiscParameterBuffer _VAEncMiscParameterFrameRate _VAEncMiscParameterHRD _VAEncMiscParameterRateControl
+  _VAEncPackedHeaderParameterBuffer _VAEncPictureParameterBufferHEVC _VAEncSequenceParameterBufferHEVC _VAEncSliceParameterBufferHEVC
+  _VAGenericValue _VAHdrMetaData _VAPictureHEVC _VAProcColorProperties
+  _VAProcColorStandardType _VAProcHighDynamicRangeMetadataType _VAProcMode _VAProcPipelineParameterBuffer
+  _VARectangle _VASurfaceAttrib VABlendState VABufferID
+  VABufferType VACodedBufferSegment VAConfigAttrib VAConfigAttribType
+  VAConfigID VAContextID VADisplay VADRMPRIMESurfaceDescriptor
+  VAEncMiscParameterBuffer VAEncMiscParameterFrameRate VAEncMiscParameterHRD VAEncMiscParameterRateControl
+  VAEncMiscParameterType VAEncPackedHeaderParameterBuffer VAEncPictureParameterBufferHEVC VAEncSequenceParameterBufferHEVC
+  VAEncSliceParameterBufferHEVC VAEntrypoint VAGenericFunc VAGenericID
+  VAGenericValue VAGenericValueType VAHdrMetaData VAPictureHEVC
+  VAProcColorProperties VAProcPipelineParameterBuffer VAProfile VARectangle
+  VAStatus VASurfaceAttrib VASurfaceAttribType VASurfaceID
+"
+
+VARS="
+  _VAProcColorStandardType_VAProcColorStandardBT2020 _VAProcColorStandardType_VAProcColorStandardBT470BG _VAProcColorStandardType_VAProcColorStandardBT470M _VAProcColorStandardType_VAProcColorStandardBT601
+  _VAProcColorStandardType_VAProcColorStandardBT709 _VAProcColorStandardType_VAProcColorStandardCount _VAProcColorStandardType_VAProcColorStandardExplicit _VAProcColorStandardType_VAProcColorStandardGenericFilm
+  _VAProcColorStandardType_VAProcColorStandardNone _VAProcColorStandardType_VAProcColorStandardSMPTE170M _VAProcColorStandardType_VAProcColorStandardSMPTE240M _VAProcColorStandardType_VAProcColorStandardSRGB
+  _VAProcColorStandardType_VAProcColorStandardSTRGB _VAProcColorStandardType_VAProcColorStandardXVYCC601 _VAProcColorStandardType_VAProcColorStandardXVYCC709 _VAProcHighDynamicRangeMetadataType_VAProcHighDynamicRangeMetadataHDR10
+  _VAProcHighDynamicRangeMetadataType_VAProcHighDynamicRangeMetadataNone _VAProcHighDynamicRangeMetadataType_VAProcHighDynamicRangeMetadataTypeCount _VAProcMode_VAProcDefaultMode _VAProcMode_VAProcPerformanceMode
+  _VAProcMode_VAProcPowerSavingMode VA_CODED_BUF_STATUS_AIR_MB_OVER_THRESHOLD VA_CODED_BUF_STATUS_BAD_BITSTREAM VA_CODED_BUF_STATUS_BITRATE_HIGH
+  VA_CODED_BUF_STATUS_BITRATE_OVERFLOW VA_CODED_BUF_STATUS_FRAME_SIZE_OVERFLOW VA_CODED_BUF_STATUS_LARGE_SLICE_MASK VA_CODED_BUF_STATUS_NUMBER_PASSES_MASK
+  VA_CODED_BUF_STATUS_PICTURE_AVE_QP_MASK VA_CODED_BUF_STATUS_SINGLE_NALU VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK VA_ENC_PACKED_HEADER_PICTURE
+  VA_ENC_PACKED_HEADER_SEQUENCE VA_ENC_PACKED_HEADER_SLICE VA_EXPORT_SURFACE_COMPOSED_LAYERS VA_EXPORT_SURFACE_READ_ONLY
+  VA_EXPORT_SURFACE_READ_WRITE VA_EXPORT_SURFACE_SEPARATE_LAYERS VA_EXPORT_SURFACE_WRITE_ONLY VA_FOURCC_BGRA
+  VA_FOURCC_BGRX VA_FOURCC_NV12 VA_FOURCC_RGBA VA_FOURCC_RGBX
+  VA_INVALID_ID VA_INVALID_SURFACE VA_PICTURE_HEVC_BOTTOM_FIELD VA_PICTURE_HEVC_FIELD_PIC
+  VA_PICTURE_HEVC_INVALID VA_PICTURE_HEVC_LONG_TERM_REFERENCE VA_PICTURE_HEVC_RPS_LT_CURR VA_PICTURE_HEVC_RPS_ST_CURR_AFTER
+  VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE VA_PROGRESSIVE VA_RC_CBR VA_RC_CQP
+  VA_RC_VBR VA_RT_FORMAT_RGB32 VA_RT_FORMAT_YUV420 VA_SOURCE_RANGE_FULL
+  VA_SOURCE_RANGE_REDUCED VA_SOURCE_RANGE_UNKNOWN VA_STATUS_ERROR_TIMEDOUT VA_STATUS_SUCCESS
+  VA_SURFACE_ATTRIB_GETTABLE VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_3
+  VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR VA_SURFACE_ATTRIB_MEM_TYPE_V4L2 VA_SURFACE_ATTRIB_MEM_TYPE_VA
+  VA_SURFACE_ATTRIB_NOT_SUPPORTED VA_SURFACE_ATTRIB_SETTABLE VA_SURFACE_ATTRIB_USAGE_HINT_DECODER VA_SURFACE_ATTRIB_USAGE_HINT_DISPLAY
+  VA_SURFACE_ATTRIB_USAGE_HINT_ENCODER VA_SURFACE_ATTRIB_USAGE_HINT_EXPORT VA_SURFACE_ATTRIB_USAGE_HINT_GENERIC VA_SURFACE_ATTRIB_USAGE_HINT_VPP_READ
+  VA_SURFACE_ATTRIB_USAGE_HINT_VPP_WRITE
+"
+
+args=()
+for f in $FUNCTIONS; do args+=(--allowlist-function "$f"); done
+for t in $TYPES; do args+=(--allowlist-type "$t"); done
+for v in $VARS; do args+=(--allowlist-var "$v"); done
+for e in VAProfile VAEntrypoint VABufferType VAConfigAttribType VASurfaceAttribType \
+         VAGenericValueType VAEncMiscParameterType; do
+  args+=(--rustified-enum "$e")
+done
+
+header=$(mktemp --suffix=.h)
+trap 'rm -f "$header"' EXIT
+printf '#include <va/%s>\n' va.h va_drm.h va_drmcommon.h va_vpp.h va_enc_hevc.h > "$header"
+
+cat <<'HEAD'
+//! libva FFI generated by tools/gen-vaapi-sys.sh; regenerate rather than edit. libva is
+//! loaded at runtime (`Va::new`), so the binary starts on machines without it.
+#![allow(non_upper_case_globals, non_camel_case_types, non_snake_case, dead_code, unsafe_op_in_unsafe_fn, clippy::all)]
+HEAD
+bindgen "$header" --use-core --no-layout-tests \
+  --dynamic-loading Va --dynamic-link-require-all "${args[@]}"
