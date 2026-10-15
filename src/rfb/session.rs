@@ -701,7 +701,16 @@ impl Session {
                     Ok(None) => return Ok(()),
                     Err(e) => {
                         warn!("HP backend failed: {e:#}");
-                        media::error_update(2, 0)
+                        let resume = self.media_active;
+                        self.media_active = false;
+                        self.hp_restarting = false;
+                        self.out.send(&media::error_update(2, 0)).await?;
+                        if !resume {
+                            return Ok(());
+                        }
+                        let full = (0, 0, self.fb_size.0, self.fb_size.1);
+                        self.pending = Some(full);
+                        return self.send_frame(&[full]).await;
                     }
                 }
             }
@@ -1318,11 +1327,11 @@ mod tests {
         }
     }
 
-    /// Running between `configure` and `stop`.
-    struct ActiveHp(Arc<Log>, std::sync::atomic::AtomicBool);
+    /// Running between `configure` and `stop`; `configure` fails while the third field is set.
+    struct ActiveHp(Arc<Log>, std::sync::atomic::AtomicBool, std::sync::atomic::AtomicBool);
     impl ActiveHp {
         fn new(log: Arc<Log>) -> Self {
-            Self(log, Default::default())
+            Self(log, Default::default(), Default::default())
         }
     }
     impl media::HpBackend for ActiveHp {
@@ -1331,6 +1340,9 @@ mod tests {
             MediaPorts::default()
         }
         fn configure(&self, _: SessionId, _: SocketAddr, _: MediaStreamConfig) -> Result<Option<MediaAnswer>> {
+            if self.2.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(anyhow!("configure failed"));
+            }
             self.1.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(Some(MediaAnswer { flags: 0, audio: Vec::new(), video1: Vec::new(), video2: Vec::new() }))
         }
@@ -1435,6 +1447,48 @@ mod tests {
         }
         let err = media::error_update(3, 0);
         assert!(!got.windows(err.len()).any(|w| w == err), "sent a media error");
+        drop(client);
+        let _ = server.await.unwrap();
+    }
+
+    async fn read_for(client: &mut TcpStream, wait: Duration) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut buf = vec![0u8; 1 << 16];
+        while let Ok(Ok(n)) = tokio::time::timeout(wait, client.read(&mut buf)).await {
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
+    }
+
+    /// A failed renegotiation after a resize falls back to Standard framebuffer updates.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_hp_renegotiation_resumes_updates() {
+        let log = Arc::new(Log::default());
+        let hp = Arc::new(ActiveHp::new(log.clone()));
+        let mut cfg = test_config();
+        cfg.display = Some(Arc::new(ResizingDisplay));
+        cfg.hp = Some(hp.clone());
+        let (mut client, server) = start(cfg).await.unwrap();
+        let mut msgs = vec![2, 0, 0, 3];
+        msgs.extend_from_slice(&ENC_RAW.to_be_bytes());
+        msgs.extend_from_slice(&ENC_MEDIA_STREAM.to_be_bytes());
+        msgs.extend_from_slice(&ENC_DESKTOP_SIZE.to_be_bytes());
+        msgs.extend_from_slice(&media_config().encode());
+        client.write_all(&msgs).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        client.write_all(include_bytes!("../../tests/fixtures/msg29-0.bin")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hp.2.store(true, std::sync::atomic::Ordering::Relaxed);
+        read_for(&mut client, Duration::from_millis(100)).await;
+        client.write_all(&media_config().encode()).await.unwrap();
+        let got = read_for(&mut client, Duration::from_millis(300)).await;
+        let err = media::error_update(2, 0);
+        let at = got.windows(err.len()).position(|w| w == err).expect("no media error");
+        let raw = [0, 0, 0, 0, 0, 64, 0, 48, 0, 0, 0, 0];
+        assert!(got[at..].windows(raw.len()).any(|w| w == raw), "no Standard update");
         drop(client);
         let _ = server.await.unwrap();
     }
