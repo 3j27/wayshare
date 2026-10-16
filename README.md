@@ -7,9 +7,9 @@ wayshare speaks Apple's Screen Sharing protocol, so there's nothing to install o
 - Copy and paste text, rich text and images in both directions.
 - Screen Sharing's High Performance mode works, for sharp, low-latency video and sound.
 
-[![wayshare demo](docs/media/demo.jpg)](docs/media/demo.mp4)
+![An Omarchy desktop shared to a Mac with Screen Sharing](docs/media/screenshot.jpg)
 
-*Demo (40s): click to watch.*
+[Watch the 40-second demo](docs/media/demo.mp4).
 
 Needs Hyprland 0.56 or newer and systemd.
 
