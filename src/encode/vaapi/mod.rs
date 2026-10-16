@@ -2,6 +2,7 @@
 //! HEVC encode of the tiled sequence with our own parameter sets and slice headers (packed
 //! headers; radeonsi parses them and re-emits equivalent ones) and explicit references.
 
+#[rustfmt::skip]
 mod sys;
 
 use std::ffi::{CStr, c_int, c_void};
@@ -26,7 +27,9 @@ pub struct VaapiEncoder {
     tiles: Tiles<Session>,
 }
 
-// All VA objects are used from whichever single thread owns the encoder.
+// SAFETY: Every VA object belongs to the `Session` inside and is used only through `&mut self`.
+// The collector thread only gets the `Dpy` and coded buffer ids (see the `Dpy` impl), and the
+// fused tile differ's EGL context is current only during each call.
 unsafe impl Send for VaapiEncoder {}
 
 impl VaapiEncoder {
@@ -37,7 +40,9 @@ impl VaapiEncoder {
         let layout = TileLayout::new(width, height);
         let session = Session::new(render_node, layout, cfg)?;
         // Rate changes go out with the next picture, so they can be frequent.
-        Ok(Self { tiles: Tiles::new(session, layout, cfg, true, Duration::from_millis(200))? })
+        Ok(Self {
+            tiles: Tiles::new(session, layout, cfg, true, Duration::from_millis(200))?,
+        })
     }
 }
 
@@ -94,13 +99,24 @@ struct Display {
 impl Display {
     fn open(node: &Path) -> Result<Self> {
         load()?;
-        let fd = OpenOptions::new().read(true).write(true).open(node).with_context(|| format!("open {}", node.display()))?;
+        let fd = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(node)
+            .with_context(|| format!("open {}", node.display()))?;
+        // SAFETY: `fd` is an open DRM node that `Display` keeps alive for as long as the
+        // display.
         let dpy = unsafe { va().vaGetDisplayDRM(fd.as_raw_fd()) };
         if dpy.is_null() {
             bail!("vaGetDisplayDRM failed");
         }
         let (mut maj, mut min) = (0, 0);
-        check(unsafe { va().vaInitialize(dpy, &mut maj, &mut min) }, "vaInitialize")?;
+        check(
+            // SAFETY: `dpy` is non-null (checked above), and `maj` and `min` are valid out
+            // pointers.
+            unsafe { va().vaInitialize(dpy, &mut maj, &mut min) },
+            "vaInitialize",
+        )?;
         Ok(Self { dpy, _fd: fd })
     }
 
@@ -108,7 +124,12 @@ impl Display {
         let mut eps = [0 as c_int; 32];
         let mut n = 0;
         let r = unsafe {
-            va().vaQueryConfigEntrypoints(self.dpy, VAProfile::VAProfileHEVCMain, eps.as_mut_ptr().cast(), &mut n)
+            va().vaQueryConfigEntrypoints(
+                self.dpy,
+                VAProfile::VAProfileHEVCMain,
+                eps.as_mut_ptr().cast(),
+                &mut n,
+            )
         };
         let eps = &eps[..n.clamp(0, 32) as usize];
         if r != 0 {
@@ -125,6 +146,7 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
+        // SAFETY: `dpy` was initialised in `Display::open` and is terminated only here.
         unsafe { va().vaTerminate(self.dpy) };
     }
 }
@@ -178,7 +200,9 @@ impl Session {
     fn new(node: &Path, layout: TileLayout, cfg: &EncoderConfig) -> Result<Self> {
         let display = Display::open(node)?;
         let dpy = display.dpy;
-        let entrypoint = display.hevc_entrypoint().context("no VAAPI HEVC encode entrypoint")?;
+        let entrypoint = display
+            .hevc_entrypoint()
+            .context("no VAAPI HEVC encode entrypoint")?;
         let seq = SeqConfig {
             width: layout.width,
             height: layout.tile_height,
@@ -187,19 +211,44 @@ impl Session {
             cu_qp_delta: cfg.bitrate_bps.is_some(),
             sao: cfg.sao,
         };
-        let rc_mode = if cfg.bitrate_bps.is_some() { VA_RC_VBR } else { VA_RC_CQP };
+        let rc_mode = if cfg.bitrate_bps.is_some() {
+            VA_RC_VBR
+        } else {
+            VA_RC_CQP
+        };
 
         let mut attribs = [
-            VAConfigAttrib { type_: VAConfigAttribType::VAConfigAttribRTFormat, value: 0 },
-            VAConfigAttrib { type_: VAConfigAttribType::VAConfigAttribRateControl, value: 0 },
-            VAConfigAttrib { type_: VAConfigAttribType::VAConfigAttribEncPackedHeaders, value: 0 },
+            VAConfigAttrib {
+                type_: VAConfigAttribType::VAConfigAttribRTFormat,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribType::VAConfigAttribRateControl,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribType::VAConfigAttribEncPackedHeaders,
+                value: 0,
+            },
         ];
         check(
-            unsafe { va().vaGetConfigAttributes(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3) },
+            // SAFETY: `dpy` is live, and `attribs` holds the 3 entries the count refers to.
+            unsafe {
+                va().vaGetConfigAttributes(
+                    dpy,
+                    VAProfile::VAProfileHEVCMain,
+                    entrypoint,
+                    attribs.as_mut_ptr(),
+                    3,
+                )
+            },
             "vaGetConfigAttributes",
         )?;
         let packed = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_SLICE;
-        if attribs[0].value & VA_RT_FORMAT_YUV420 == 0 || attribs[1].value & rc_mode == 0 || attribs[2].value & packed != packed {
+        if attribs[0].value & VA_RT_FORMAT_YUV420 == 0
+            || attribs[1].value & rc_mode == 0
+            || attribs[2].value & packed != packed
+        {
             bail!(
                 "driver lacks HEVC encode features: rt {:#x} rc {:#x} packed {:#x}",
                 attribs[0].value,
@@ -236,17 +285,45 @@ impl Session {
             display,
         };
         let (cw, ch) = (s.seq.coded_width(), s.seq.coded_height());
+        // SAFETY: `dpy` is live. Each pointer argument refers to a field or local of `s` whose
+        // length matches the count passed, and the ids written into `s` are destroyed in
+        // `Session::drop`, including on the early returns below.
         unsafe {
             check(
-                va().vaCreateConfig(dpy, VAProfile::VAProfileHEVCMain, entrypoint, attribs.as_mut_ptr(), 3, &mut s.enc_config),
+                va().vaCreateConfig(
+                    dpy,
+                    VAProfile::VAProfileHEVCMain,
+                    entrypoint,
+                    attribs.as_mut_ptr(),
+                    3,
+                    &mut s.enc_config,
+                ),
                 "va().vaCreateConfig(HEVC encode)",
             )?;
             check(
-                va().vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.inputs.as_mut_ptr(), s.inputs.len() as u32, ptr::null_mut(), 0),
+                va().vaCreateSurfaces(
+                    dpy,
+                    VA_RT_FORMAT_YUV420,
+                    cw,
+                    ch,
+                    s.inputs.as_mut_ptr(),
+                    s.inputs.len() as u32,
+                    ptr::null_mut(),
+                    0,
+                ),
                 "create input surfaces",
             )?;
             check(
-                va().vaCreateSurfaces(dpy, VA_RT_FORMAT_YUV420, cw, ch, s.recon.as_mut_ptr(), RECON_SURFACES as u32, ptr::null_mut(), 0),
+                va().vaCreateSurfaces(
+                    dpy,
+                    VA_RT_FORMAT_YUV420,
+                    cw,
+                    ch,
+                    s.recon.as_mut_ptr(),
+                    RECON_SURFACES as u32,
+                    ptr::null_mut(),
+                    0,
+                ),
                 "create reconstructed surfaces",
             )?;
             let mut targets: Vec<VASurfaceID> = s.inputs.iter().chain(&s.recon).copied().collect();
@@ -266,16 +343,40 @@ impl Session {
             let coded_size = cw * ch * 3 / 2 + (1 << 16);
             for c in &mut s.coded {
                 check(
-                    va().vaCreateBuffer(dpy, s.enc_ctx, VABufferType::VAEncCodedBufferType, coded_size, 1, ptr::null_mut(), c),
+                    va().vaCreateBuffer(
+                        dpy,
+                        s.enc_ctx,
+                        VABufferType::VAEncCodedBufferType,
+                        coded_size,
+                        1,
+                        ptr::null_mut(),
+                        c,
+                    ),
                     "create coded buffer",
                 )?;
             }
             check(
-                va().vaCreateConfig(dpy, VAProfile::VAProfileNone, VAEntrypoint::VAEntrypointVideoProc, ptr::null_mut(), 0, &mut s.vpp_config),
+                va().vaCreateConfig(
+                    dpy,
+                    VAProfile::VAProfileNone,
+                    VAEntrypoint::VAEntrypointVideoProc,
+                    ptr::null_mut(),
+                    0,
+                    &mut s.vpp_config,
+                ),
                 "va().vaCreateConfig(VideoProc)",
             )?;
             check(
-                va().vaCreateContext(dpy, s.vpp_config, cw as c_int, ch as c_int, 0, ptr::null_mut(), 0, &mut s.vpp_ctx),
+                va().vaCreateContext(
+                    dpy,
+                    s.vpp_config,
+                    cw as c_int,
+                    ch as c_int,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    &mut s.vpp_ctx,
+                ),
                 "va().vaCreateContext(VideoProc)",
             )?;
         }
@@ -297,9 +398,13 @@ impl Session {
         if let Some(&(_, s)) = self.imports.iter().find(|(id, _)| *id == buf.id) {
             return Ok(s);
         }
+        // SAFETY: `self.dpy()` is live, and `buf` is borrowed, so its plane fds stay open for the
+        // call.
         let surface = unsafe { import_dmabuf(self.dpy(), buf)? };
         if self.imports.len() >= MAX_IMPORTS {
             let (_, mut old) = self.imports.remove(0);
+            // SAFETY: `old` is a surface this session created and just removed from `imports`,
+            // so it is destroyed once.
             unsafe { va().vaDestroySurfaces(self.dpy(), &mut old, 1) };
         }
         self.imports.push((buf.id, surface));
@@ -312,12 +417,25 @@ impl Session {
         let (y, rows, w) = (l.tile_y(t), l.tile_rows(t), l.width);
         self.vpp(src, rect(y, rows, w), dst, rect(0, rows, w))?;
         if rows < l.tile_height {
-            self.vpp(src, rect(y + rows - 1, 1, w), dst, rect(rows, l.tile_height - rows, w))?;
+            self.vpp(
+                src,
+                rect(y + rows - 1, 1, w),
+                dst,
+                rect(rows, l.tile_height - rows, w),
+            )?;
         }
         Ok(())
     }
 
-    fn vpp(&self, src: VASurfaceID, src_rect: VARectangle, dst: VASurfaceID, dst_rect: VARectangle) -> Result<()> {
+    fn vpp(
+        &self,
+        src: VASurfaceID,
+        src_rect: VARectangle,
+        dst: VASurfaceID,
+        dst_rect: VARectangle,
+    ) -> Result<()> {
+        // SAFETY: `VAProcPipelineParameterBuffer` is a plain C struct of integers and pointers,
+        // so all-zero is a valid value.
         let mut p: VAProcPipelineParameterBuffer = unsafe { std::mem::zeroed() };
         p.surface = src;
         p.surface_region = &src_rect;
@@ -326,11 +444,19 @@ impl Session {
         p.output_background_color = 0xff00_0000;
         p.output_color_standard = _VAProcColorStandardType_VAProcColorStandardBT709;
         p.input_color_properties.color_range = VA_SOURCE_RANGE_FULL as u8;
-        p.output_color_properties.color_range =
-            if self.cfg.color.full_range { VA_SOURCE_RANGE_FULL } else { VA_SOURCE_RANGE_REDUCED } as u8;
+        p.output_color_properties.color_range = if self.cfg.color.full_range {
+            VA_SOURCE_RANGE_FULL
+        } else {
+            VA_SOURCE_RANGE_REDUCED
+        } as u8;
         p.output_color_properties.matrix_coefficients = 1;
-        let buf = self.buffer(self.vpp_ctx, VABufferType::VAProcPipelineParameterBufferType, &mut p)?;
+        let buf = self.buffer(
+            self.vpp_ctx,
+            VABufferType::VAProcPipelineParameterBufferType,
+            &mut p,
+        )?;
         let r = self.picture(self.vpp_ctx, dst, &[buf]);
+        // SAFETY: `buf` was created by `self.buffer` just above and is destroyed once.
         unsafe { va().vaDestroyBuffer(self.dpy(), buf) };
         r
     }
@@ -339,18 +465,35 @@ impl Session {
         self.raw_buffer(ctx, ty, (data as *mut T).cast(), size_of::<T>())
     }
 
-    fn raw_buffer(&self, ctx: VAContextID, ty: VABufferType, data: *mut c_void, size: usize) -> Result<VABufferID> {
+    fn raw_buffer(
+        &self,
+        ctx: VAContextID,
+        ty: VABufferType,
+        data: *mut c_void,
+        size: usize,
+    ) -> Result<VABufferID> {
         let mut id = VA_INVALID_ID;
-        check(unsafe { va().vaCreateBuffer(self.dpy(), ctx, ty, size as u32, 1, data, &mut id) }, "vaCreateBuffer")?;
+        check(
+            // SAFETY: `data` points at `size` readable bytes (callers pass `&mut T` with
+            // `size_of::<T>()`, or a byte slice), and VA copies them during the call. `id` is a
+            // valid out pointer.
+            unsafe { va().vaCreateBuffer(self.dpy(), ctx, ty, size as u32, 1, data, &mut id) },
+            "vaCreateBuffer",
+        )?;
         Ok(id)
     }
 
     fn picture(&self, ctx: VAContextID, target: VASurfaceID, bufs: &[VABufferID]) -> Result<()> {
         let dpy = self.dpy();
+        // SAFETY: `dpy` and `ctx` are live, and the buffer ids come from `vaCreateBuffer` on
+        // that context. `b` is a local copy whose length is passed.
         unsafe {
             check(va().vaBeginPicture(dpy, ctx, target), "vaBeginPicture")?;
             let mut b = bufs.to_vec();
-            let r = check(va().vaRenderPicture(dpy, ctx, b.as_mut_ptr(), b.len() as c_int), "vaRenderPicture");
+            let r = check(
+                va().vaRenderPicture(dpy, ctx, b.as_mut_ptr(), b.len() as c_int),
+                "vaRenderPicture",
+            );
             let e = check(va().vaEndPicture(dpy, ctx), "vaEndPicture");
             r.and(e)
         }
@@ -362,8 +505,15 @@ impl Session {
             ty: u32,
             payload: T,
         }
-        let mut m = Misc { ty: ty as u32, payload };
-        self.buffer(self.enc_ctx, VABufferType::VAEncMiscParameterBufferType, &mut m)
+        let mut m = Misc {
+            ty: ty as u32,
+            payload,
+        };
+        self.buffer(
+            self.enc_ctx,
+            VABufferType::VAEncMiscParameterBufferType,
+            &mut m,
+        )
     }
 
     fn packed(&self, ty: u32, nals: &[u8]) -> Result<[VABufferID; 2]> {
@@ -373,7 +523,11 @@ impl Session {
             has_emulation_bytes: 1,
             va_reserved: [0; 4],
         };
-        let p = self.buffer(self.enc_ctx, VABufferType::VAEncPackedHeaderParameterBufferType, &mut param)?;
+        let p = self.buffer(
+            self.enc_ctx,
+            VABufferType::VAEncPackedHeaderParameterBufferType,
+            &mut param,
+        )?;
         let d = self.raw_buffer(
             self.enc_ctx,
             VABufferType::VAEncPackedHeaderDataBufferType,
@@ -385,6 +539,8 @@ impl Session {
 
     fn rate_buffers(&self) -> Result<Vec<VABufferID>> {
         let mut out = Vec::new();
+        // SAFETY: `VAEncMiscParameterFrameRate` is a plain C struct of integers, so all-zero is
+        // a valid value.
         let mut fr: VAEncMiscParameterFrameRate = unsafe { std::mem::zeroed() };
         fr.framerate = self.seq.pic_rate;
         out.push(self.misc(VAEncMiscParameterType::VAEncMiscParameterTypeFrameRate, fr)?);
@@ -392,18 +548,29 @@ impl Session {
             let total = self.trim.requested();
             let target = total.min(u32::MAX as u64) as u32;
             let max = (total * 3 / 2).min(u32::MAX as u64) as u32;
+            // SAFETY: `VAEncMiscParameterRateControl` is a plain C struct of integers, so all-
+            // zero is a valid value.
             let mut rc: VAEncMiscParameterRateControl = unsafe { std::mem::zeroed() };
             rc.bits_per_second = max;
             rc.target_percentage = (target as u64 * 100 / max.max(1) as u64) as u32;
             rc.window_size = 1000;
-            out.push(self.misc(VAEncMiscParameterType::VAEncMiscParameterTypeRateControl, rc)?);
-            let hrd = VAEncMiscParameterHRD { initial_buffer_fullness: max / 2, buffer_size: max, va_reserved: [0; 4] };
+            out.push(self.misc(
+                VAEncMiscParameterType::VAEncMiscParameterTypeRateControl,
+                rc,
+            )?);
+            let hrd = VAEncMiscParameterHRD {
+                initial_buffer_fullness: max / 2,
+                buffer_size: max,
+                va_reserved: [0; 4],
+            };
             out.push(self.misc(VAEncMiscParameterType::VAEncMiscParameterTypeHRD, hrd)?);
         }
         Ok(out)
     }
 
     fn seq_params(&self) -> VAEncSequenceParameterBufferHEVC {
+        // SAFETY: `VAEncSequenceParameterBufferHEVC` is a plain C struct of integers and bit-
+        // field unions, so all-zero is a valid value.
         let mut s: VAEncSequenceParameterBufferHEVC = unsafe { std::mem::zeroed() };
         s.general_profile_idc = 1;
         s.general_level_idc = self.seq.level_idc();
@@ -411,6 +578,8 @@ impl Session {
         s.bits_per_second = self.cfg.bitrate_bps.unwrap_or(0).min(u32::MAX as u64) as u32;
         s.pic_width_in_luma_samples = self.seq.coded_width() as u16;
         s.pic_height_in_luma_samples = self.seq.coded_height() as u16;
+        // SAFETY: `seq_fields` is a union whose `bits` view covers the whole value, and the
+        // struct was zero-initialised.
         let f = unsafe { &mut s.seq_fields.bits };
         f.set_chroma_format_idc(1);
         f.set_amp_enabled_flag(1);
@@ -421,6 +590,8 @@ impl Session {
         s.max_transform_hierarchy_depth_inter = 4;
         s.max_transform_hierarchy_depth_intra = 4;
         s.vui_parameters_present_flag = 1;
+        // SAFETY: `vui_fields` is a union whose `bits` view covers the whole value, and the
+        // struct was zero-initialised.
         let v = unsafe { &mut s.vui_fields.bits };
         v.set_aspect_ratio_info_present_flag(1);
         v.set_vui_timing_info_present_flag(1);
@@ -439,7 +610,13 @@ impl Session {
     }
 
     /// Submits one picture; returns whether it is intra.
-    fn submit_pic(&mut self, pic: TilePic, input: VASurfaceID, coded: VABufferID, taken: &mut Vec<VASurfaceID>) -> Result<bool> {
+    fn submit_pic(
+        &mut self,
+        pic: TilePic,
+        input: VASurfaceID,
+        coded: VABufferID,
+        taken: &mut Vec<VASurfaceID>,
+    ) -> Result<bool> {
         let t = pic.tile;
         let kind = match pic.kind {
             PicKind::Inter if self.latest[t].is_none() => PicKind::Intra,
@@ -461,8 +638,17 @@ impl Session {
             .filter(|&(_, own)| !(own && kind != PicKind::Inter))
             .collect();
         keep.sort_by_key(|(r, _)| std::cmp::Reverse(r.poc));
-        let rps: Vec<RpsEntry> = keep.iter().map(|&(r, used)| RpsEntry { distance: poc - r.poc, used }).collect();
-        if rps.last().is_some_and(|e| e.distance > hevc::MAX_REF_DISTANCE) {
+        let rps: Vec<RpsEntry> = keep
+            .iter()
+            .map(|&(r, used)| RpsEntry {
+                distance: poc - r.poc,
+                used,
+            })
+            .collect();
+        if rps
+            .last()
+            .is_some_and(|e| e.distance > hevc::MAX_REF_DISTANCE)
+        {
             bail!("reference out of short-term range");
         }
 
@@ -471,24 +657,47 @@ impl Session {
             PicKind::Intra => (hevc::NAL_TRAIL_R, SliceType::I),
             PicKind::Inter => (hevc::NAL_TRAIL_R, SliceType::P),
         };
-        let qp_delta = if self.rc_mode == VA_RC_CQP { self.cfg.qp as i32 - 26 } else { 0 };
+        let qp_delta = if self.rc_mode == VA_RC_CQP {
+            self.cfg.qp as i32 - 26
+        } else {
+            0
+        };
 
         let mut bufs = Vec::new();
         let r = (|| -> Result<()> {
             if kind == PicKind::Idr {
                 let mut sp = self.seq_params();
-                bufs.push(self.buffer(self.enc_ctx, VABufferType::VAEncSequenceParameterBufferType, &mut sp)?);
+                bufs.push(self.buffer(
+                    self.enc_ctx,
+                    VABufferType::VAEncSequenceParameterBufferType,
+                    &mut sp,
+                )?);
                 self.send_rate = true;
             }
             if std::mem::take(&mut self.send_rate) {
                 bufs.extend(self.rate_buffers()?);
             }
 
-            let invalid = VAPictureHEVC { picture_id: VA_INVALID_SURFACE, pic_order_cnt: 0, flags: VA_PICTURE_HEVC_INVALID, va_reserved: [0; 4] };
-            let vapic = |r: Ref| VAPictureHEVC { picture_id: r.surface, pic_order_cnt: r.poc as i32, flags: 0, va_reserved: [0; 4] };
+            let invalid = VAPictureHEVC {
+                picture_id: VA_INVALID_SURFACE,
+                pic_order_cnt: 0,
+                flags: VA_PICTURE_HEVC_INVALID,
+                va_reserved: [0; 4],
+            };
+            let vapic = |r: Ref| VAPictureHEVC {
+                picture_id: r.surface,
+                pic_order_cnt: r.poc as i32,
+                flags: 0,
+                va_reserved: [0; 4],
+            };
 
+            // SAFETY: `VAEncPictureParameterBufferHEVC` is a plain C struct of integers and
+            // bit-field unions, so all-zero is a valid value.
             let mut pp: VAEncPictureParameterBufferHEVC = unsafe { std::mem::zeroed() };
-            pp.decoded_curr_pic = vapic(Ref { surface: recon, poc });
+            pp.decoded_curr_pic = vapic(Ref {
+                surface: recon,
+                poc,
+            });
             pp.reference_frames = [invalid; 15];
             for (i, (r, _)) in keep.iter().enumerate() {
                 pp.reference_frames[i] = vapic(*r);
@@ -497,6 +706,8 @@ impl Session {
             pp.collocated_ref_pic_index = 0xff;
             pp.pic_init_qp = 26;
             pp.nal_unit_type = nal_type;
+            // SAFETY: `pic_fields` is a union whose `bits` view covers the whole value, and the
+            // struct was zero-initialised.
             let f = unsafe { &mut pp.pic_fields.bits };
             f.set_idr_pic_flag((kind == PicKind::Idr) as u32);
             f.set_coding_type(if slice_type == SliceType::I { 1 } else { 2 });
@@ -505,8 +716,14 @@ impl Session {
             f.set_transform_skip_enabled_flag(1);
             f.set_cu_qp_delta_enabled_flag(self.seq.cu_qp_delta as u32);
             f.set_pps_loop_filter_across_slices_enabled_flag(1);
-            bufs.push(self.buffer(self.enc_ctx, VABufferType::VAEncPictureParameterBufferType, &mut pp)?);
+            bufs.push(self.buffer(
+                self.enc_ctx,
+                VABufferType::VAEncPictureParameterBufferType,
+                &mut pp,
+            )?);
 
+            // SAFETY: `VAEncSliceParameterBufferHEVC` is a plain C struct of integers and bit-
+            // field unions, so all-zero is a valid value.
             let mut sl: VAEncSliceParameterBufferHEVC = unsafe { std::mem::zeroed() };
             sl.num_ctu_in_slice = self.seq.ctus();
             sl.slice_type = slice_type as u8;
@@ -517,27 +734,46 @@ impl Session {
             }
             sl.max_num_merge_cand = 5;
             sl.slice_qp_delta = qp_delta as i8;
+            // SAFETY: `slice_fields` is a union whose `bits` view covers the whole value, and
+            // the struct was zero-initialised.
             let f = unsafe { &mut sl.slice_fields.bits };
             f.set_last_slice_of_pic_flag(1);
             f.set_slice_sao_luma_flag(self.seq.sao as u32);
             f.set_slice_sao_chroma_flag(self.seq.sao as u32);
             f.set_slice_loop_filter_across_slices_enabled_flag(1);
-            bufs.push(self.buffer(self.enc_ctx, VABufferType::VAEncSliceParameterBufferType, &mut sl)?);
+            bufs.push(self.buffer(
+                self.enc_ctx,
+                VABufferType::VAEncSliceParameterBufferType,
+                &mut sl,
+            )?);
 
             if kind == PicKind::Idr {
                 let ps = [self.seq.vps(), self.seq.sps(), self.seq.pps()].concat();
                 bufs.extend(self.packed(1, &ps)?); // VAEncPackedHeaderSequence
             }
-            let sh = SliceHeader { nal_type, slice_type, poc, rps: &rps, qp_delta, sao: self.seq.sao }.write();
+            let sh = SliceHeader {
+                nal_type,
+                slice_type,
+                poc,
+                rps: &rps,
+                qp_delta,
+                sao: self.seq.sao,
+            }
+            .write();
             bufs.extend(self.packed(3, &sh)?); // VAEncPackedHeaderSlice
 
             self.picture(self.enc_ctx, input, &bufs)
         })();
         for b in bufs {
+            // SAFETY: Each buffer was created on this context in this call and is destroyed
+            // once.
             unsafe { va().vaDestroyBuffer(self.dpy(), b) };
         }
         r?;
-        self.latest[t] = Some(Ref { surface: recon, poc });
+        self.latest[t] = Some(Ref {
+            surface: recon,
+            poc,
+        });
         Ok(kind != PicKind::Inter)
     }
 }
@@ -561,7 +797,12 @@ impl Backend for Session {
             Some(s) => s,
             None => self.take_slot()?,
         };
-        match self.fused.as_mut().unwrap().diff_convert(&frame.buffer, slot) {
+        match self
+            .fused
+            .as_mut()
+            .unwrap()
+            .diff_convert(&frame.buffer, slot)
+        {
             Ok(changed) => {
                 self.prepared = Some(slot);
                 Ok(Some(changed))
@@ -591,11 +832,24 @@ impl Backend for Session {
                 }
             }
             let mut taken = Vec::new();
-            let mut job = Job { slot, pics: Vec::new(), submitted: Instant::now(), meta: None };
+            let mut job = Job {
+                slot,
+                pics: Vec::new(),
+                submitted: Instant::now(),
+                meta: None,
+            };
             for (i, &p) in pics.iter().enumerate() {
-                let (input, coded) = (self.inputs[slot * TILE_COUNT + p.tile], self.coded[slot * TILE_COUNT + i]);
+                let (input, coded) = (
+                    self.inputs[slot * TILE_COUNT + p.tile],
+                    self.coded[slot * TILE_COUNT + i],
+                );
                 if converted.is_none() {
-                    check(unsafe { va().vaSyncSurface(self.dpy(), input) }, "vaSyncSurface")?;
+                    check(
+                        // SAFETY: `input` is one of `self.inputs`, which stay alive until
+                        // `Drop`.
+                        unsafe { va().vaSyncSurface(self.dpy(), input) },
+                        "vaSyncSurface",
+                    )?;
                 }
                 if i == 0 {
                     job.submitted = Instant::now();
@@ -604,15 +858,23 @@ impl Backend for Session {
                 let keyframe = self.submit_pic(p, input, coded, &mut taken)?;
                 job.pics.push((p.tile as u8, keyframe, coded));
             }
-            job.meta = Some(std::mem::replace(&mut meta, EncodedFrame {
-                seq: 0,
-                changed_tiles: [false; TILE_COUNT],
-                tiles: Vec::new(),
-                timings: Default::default(),
-                presented: None,
-                frame_size: (0, 0),
-            }));
-            self.collector()?.jobs.as_ref().unwrap().send(job).map_err(|_| anyhow::anyhow!("encode collector died"))?;
+            job.meta = Some(std::mem::replace(
+                &mut meta,
+                EncodedFrame {
+                    seq: 0,
+                    changed_tiles: [false; TILE_COUNT],
+                    tiles: Vec::new(),
+                    timings: Default::default(),
+                    presented: None,
+                    frame_size: (0, 0),
+                },
+            ));
+            self.collector()?
+                .jobs
+                .as_ref()
+                .unwrap()
+                .send(job)
+                .map_err(|_| anyhow::anyhow!("encode collector died"))?;
             Ok(())
         })();
         if r.is_err() {
@@ -661,6 +923,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.collector.take();
         let dpy = self.dpy();
+        // SAFETY: The collector thread was joined above, so nothing else is using these
+        // objects. Every id was created by this session and is destroyed once, invalid ids are
+        // skipped, and each array pointer is passed with its real length. The display is
+        // dropped last (field order).
         unsafe {
             for (_, mut s) in self.imports.drain(..) {
                 va().vaDestroySurfaces(dpy, &mut s, 1);
@@ -675,8 +941,16 @@ impl Drop for Session {
                     va().vaDestroyContext(dpy, ctx);
                 }
             }
-            va().vaDestroySurfaces(dpy, self.inputs.as_mut_ptr(), self.inputs.len() as c_int);
-            va().vaDestroySurfaces(dpy, self.recon.as_mut_ptr(), RECON_SURFACES as c_int);
+            let mut surfaces: Vec<VASurfaceID> = self
+                .inputs
+                .iter()
+                .chain(&self.recon)
+                .copied()
+                .filter(|&s| s != VA_INVALID_SURFACE)
+                .collect();
+            if !surfaces.is_empty() {
+                va().vaDestroySurfaces(dpy, surfaces.as_mut_ptr(), surfaces.len() as c_int);
+            }
             for cfg in [self.enc_config, self.vpp_config] {
                 if cfg != VA_INVALID_ID {
                     va().vaDestroyConfig(dpy, cfg);
@@ -692,7 +966,11 @@ impl Session {
         match self.free_slots.pop() {
             Some(s) => Ok(s),
             // Both slots queued: wait for the collector to finish the older frame.
-            None => self.collector()?.free.recv().map_err(|_| anyhow::anyhow!("encode collector died")),
+            None => self
+                .collector()?
+                .free
+                .recv()
+                .map_err(|_| anyhow::anyhow!("encode collector died")),
         }
     }
 
@@ -704,8 +982,12 @@ impl Session {
         for slot in 0..FLIGHT {
             let mut targets = Vec::new();
             for t in 0..TILE_COUNT {
+                // SAFETY: `VADRMPRIMESurfaceDescriptor` is a plain C struct of integers and
+                // arrays, so all-zero is a valid value.
                 let mut d: VADRMPRIMESurfaceDescriptor = unsafe { std::mem::zeroed() };
                 check(
+                    // SAFETY: The surface is one of `self.inputs`, and `d` is the descriptor
+                    // type that VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 requires.
                     unsafe {
                         va().vaExportSurfaceHandle(
                             self.dpy(),
@@ -718,6 +1000,8 @@ impl Session {
                     "vaExportSurfaceHandle",
                 )?;
                 for o in &d.objects[..d.num_objects as usize] {
+                    // SAFETY: vaExportSurfaceHandle gives the caller ownership of each exported
+                    // object fd, and each is wrapped once.
                     self._exported.push(unsafe { OwnedFd::from_raw_fd(o.fd) });
                 }
                 if d.num_layers != 2 {
@@ -737,7 +1021,10 @@ impl Session {
                     }
                 };
                 let (w, h) = (d.width, d.height);
-                targets.push(Nv12Target { y: plane(0, w, h), uv: plane(1, w / 2, h / 2) });
+                targets.push(Nv12Target {
+                    y: plane(0, w, h),
+                    uv: plane(1, w / 2, h / 2),
+                });
             }
             slots.push(targets);
         }
@@ -763,7 +1050,9 @@ impl Session {
 
 #[derive(Clone, Copy)]
 struct Dpy(VADisplay);
-// libva serializes per display (and per context) inside the driver.
+// SAFETY: libva calls on one display may come from several threads. The collector thread is
+// joined in `Collector::drop`, which `Session::drop` runs before destroying any buffer or
+// terminating the display, so the pointer stays valid for the thread's whole life.
 unsafe impl Send for Dpy {}
 
 struct Job {
@@ -798,35 +1087,51 @@ impl Collector {
         let (size_tx, sizes) = mpsc::channel();
         let output: Output = Default::default();
         let out = output.clone();
-        let thread = std::thread::Builder::new().name("hevc-collect".into()).spawn(move || {
-            let dpy = dpy;
-            for mut job in job_rx {
-                let r = job
-                    .pics
-                    .iter()
-                    .map(|&(index, keyframe, buf)| {
-                        let data = unsafe { read_coded(dpy.0, buf)? };
-                        Ok(EncodedTile { index, keyframe, data: nal::strip_sei(&data) })
-                    })
-                    .collect::<Result<Vec<_>>>()
-                    .map(|tiles| {
-                        let mut f = job.meta.take().expect("job without metadata");
-                        f.timings.encode = job.submitted.elapsed();
-                        let _ = size_tx.send(tiles.iter().map(|t| t.data.len()).sum());
-                        f.tiles = tiles;
-                        f
-                    });
-                let _ = free_tx.send(job.slot);
-                let sent = match &*out.lock().unwrap() {
-                    Some(tx) => tx.send(r).is_ok(),
-                    None => res_tx.send(r).is_ok(),
-                };
-                if !sent {
-                    break;
+        let thread = std::thread::Builder::new()
+            .name("hevc-collect".into())
+            .spawn(move || {
+                let dpy = dpy;
+                for mut job in job_rx {
+                    let r = job
+                        .pics
+                        .iter()
+                        .map(|&(index, keyframe, buf)| {
+                            // SAFETY: `dpy` outlives this thread (see the `Dpy` impl), and
+                            // `buf` is one of the session's coded buffers, which are not reused
+                            // until this job reports its slot free.
+                            let data = unsafe { read_coded(dpy.0, buf)? };
+                            Ok(EncodedTile {
+                                index,
+                                keyframe,
+                                data: nal::strip_sei(&data),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                        .map(|tiles| {
+                            let mut f = job.meta.take().expect("job without metadata");
+                            f.timings.encode = job.submitted.elapsed();
+                            let _ = size_tx.send(tiles.iter().map(|t| t.data.len()).sum());
+                            f.tiles = tiles;
+                            f
+                        });
+                    let _ = free_tx.send(job.slot);
+                    let sent = match &*out.lock().unwrap() {
+                        Some(tx) => tx.send(r).is_ok(),
+                        None => res_tx.send(r).is_ok(),
+                    };
+                    if !sent {
+                        break;
+                    }
                 }
-            }
-        })?;
-        Ok(Self { jobs: Some(jobs), results, free, sizes, output, thread: Some(thread) })
+            })?;
+        Ok(Self {
+            jobs: Some(jobs),
+            results,
+            free,
+            sizes,
+            output,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -841,8 +1146,14 @@ impl Drop for Collector {
 
 /// Waits for `buf` with short timeouts: vaSyncBuffer holds the context lock while waiting,
 /// which would otherwise block submission of the next frame.
+///
+/// # Safety
+///
+/// `dpy` must be an initialised display and `buf` a coded buffer on it that has been submitted
+/// and is not destroyed during the call.
 unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
     loop {
+        // SAFETY: Upheld by this function's contract.
         match unsafe { va().vaSyncBuffer(dpy, buf, 1_000_000) } {
             0 => break,
             s if s == VA_STATUS_ERROR_TIMEDOUT as VAStatus => continue,
@@ -850,12 +1161,18 @@ unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
         }
     }
     let mut data = Vec::new();
+    // SAFETY: Upheld by this function's contract. The segment list from vaMapBuffer is valid
+    // until vaUnmapBuffer, each `buf` points at `size` bytes, and `seg` is null-checked before
+    // each dereference.
     unsafe {
         let mut seg: *mut c_void = ptr::null_mut();
         check(va().vaMapBuffer(dpy, buf, &mut seg), "map coded buffer")?;
         while !seg.is_null() {
             let s = &*(seg as *const VACodedBufferSegment);
-            data.extend_from_slice(std::slice::from_raw_parts(s.buf as *const u8, s.size as usize));
+            data.extend_from_slice(std::slice::from_raw_parts(
+                s.buf as *const u8,
+                s.size as usize,
+            ));
             seg = s.next;
         }
         va().vaUnmapBuffer(dpy, buf);
@@ -864,12 +1181,19 @@ unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
 }
 
 fn rect(y: u32, height: u32, width: u32) -> VARectangle {
-    VARectangle { x: 0, y: y as i16, width: width as u16, height: height as u16 }
+    VARectangle {
+        x: 0,
+        y: y as i16,
+        width: width as u16,
+        height: height as u16,
+    }
 }
 
 static VA: OnceLock<Result<Va, String>> = OnceLock::new();
 
 fn load() -> Result<&'static Va> {
+    // SAFETY: `Va::new` only dlopens the library and resolves its symbols; the `OnceLock` runs
+    // it once, before any VA call.
     VA.get_or_init(|| unsafe { Va::new("libva-drm.so.2") }.map_err(|e| e.to_string()))
         .as_ref()
         .map_err(|e| anyhow!("load libva: {e}"))
@@ -877,13 +1201,16 @@ fn load() -> Result<&'static Va> {
 
 /// Only valid once `Display::open` has loaded libva.
 fn va() -> &'static Va {
-    VA.get().and_then(|r| r.as_ref().ok()).expect("libva not loaded")
+    VA.get()
+        .and_then(|r| r.as_ref().ok())
+        .expect("libva not loaded")
 }
 
 fn check(status: VAStatus, what: &str) -> Result<()> {
     if status == 0 {
         return Ok(());
     }
+    // SAFETY: vaErrorStr returns a NUL-terminated string that outlives the call.
     let msg = unsafe { CStr::from_ptr(va().vaErrorStr(status)) }.to_string_lossy();
     bail!("{what}: {msg} ({status})")
 }
@@ -898,7 +1225,14 @@ fn va_fourcc(drm: u32) -> Result<u32> {
     })
 }
 
+///
+/// # Safety
+///
+/// `dpy` must be an initialised display, and the plane fds of `buf` must stay open for the
+/// duration of the call.
 unsafe fn import_dmabuf(dpy: VADisplay, buf: &DmabufBuffer) -> Result<VASurfaceID> {
+    // SAFETY: `VADRMPRIMESurfaceDescriptor` is a plain C struct of integers and arrays, so all-
+    // zero is a valid value.
     let mut desc: VADRMPRIMESurfaceDescriptor = unsafe { std::mem::zeroed() };
     desc.fourcc = va_fourcc(buf.fourcc)?;
     desc.width = buf.width;
@@ -916,6 +1250,7 @@ unsafe fn import_dmabuf(dpy: VADisplay, buf: &DmabufBuffer) -> Result<VASurfaceI
             None => {
                 let o = inodes.len();
                 let fd = p.fd.as_raw_fd();
+                // SAFETY: `fd` is a plane fd owned by `buf`, which the caller keeps open.
                 let size = unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
                 desc.objects[o].fd = fd;
                 desc.objects[o].size = size.max(0) as u32;
@@ -930,19 +1265,44 @@ unsafe fn import_dmabuf(dpy: VADisplay, buf: &DmabufBuffer) -> Result<VASurfaceI
     }
     desc.num_objects = inodes.len() as u32;
 
-    let mut attribs: [VASurfaceAttrib; 2] = unsafe { std::mem::zeroed() };
-    attribs[0].type_ = VASurfaceAttribType::VASurfaceAttribMemoryType;
-    attribs[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
-    attribs[0].value.type_ = VAGenericValueType::VAGenericValueTypeInteger;
-    attribs[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 as i32;
-    attribs[1].type_ = VASurfaceAttribType::VASurfaceAttribExternalBufferDescriptor;
-    attribs[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
-    attribs[1].value.type_ = VAGenericValueType::VAGenericValueTypePointer;
-    attribs[1].value.value.p = (&mut desc as *mut VADRMPRIMESurfaceDescriptor).cast();
+    let mut attribs = [
+        VASurfaceAttrib {
+            type_: VASurfaceAttribType::VASurfaceAttribMemoryType,
+            flags: VA_SURFACE_ATTRIB_SETTABLE,
+            value: VAGenericValue {
+                type_: VAGenericValueType::VAGenericValueTypeInteger,
+                value: _VAGenericValue__bindgen_ty_1 {
+                    i: VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 as i32,
+                },
+            },
+        },
+        VASurfaceAttrib {
+            type_: VASurfaceAttribType::VASurfaceAttribExternalBufferDescriptor,
+            flags: VA_SURFACE_ATTRIB_SETTABLE,
+            value: VAGenericValue {
+                type_: VAGenericValueType::VAGenericValueTypePointer,
+                value: _VAGenericValue__bindgen_ty_1 {
+                    p: (&mut desc as *mut VADRMPRIMESurfaceDescriptor).cast(),
+                },
+            },
+        },
+    ];
     let mut surface = VA_INVALID_SURFACE;
     check(
+        // SAFETY: `desc` is live and referenced by `attribs[1]` until the call returns, and its
+        // fds are open. `attribs` has the 2 entries passed as the count, and `surface` is a
+        // valid out pointer for 1 surface.
         unsafe {
-            va().vaCreateSurfaces(dpy, VA_RT_FORMAT_RGB32, buf.width, buf.height, &mut surface, 1, attribs.as_mut_ptr(), 2)
+            va().vaCreateSurfaces(
+                dpy,
+                VA_RT_FORMAT_RGB32,
+                buf.width,
+                buf.height,
+                &mut surface,
+                1,
+                attribs.as_mut_ptr(),
+                2,
+            )
         },
         "import dmabuf as VA surface",
     )?;
