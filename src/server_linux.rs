@@ -167,7 +167,7 @@ pub struct LinuxHp {
 
 struct Media {
     session: SessionId,
-    _audio: Option<crate::audio::sender::AudioSender>,
+    audio: Option<crate::audio::sender::AudioSender>,
     peer: IpAddr,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -182,6 +182,11 @@ impl Media {
 impl Drop for Media {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Stop audio before waiting for video teardown: the viewer may have
+        // already closed its audio socket.
+        if let Some(audio) = self.audio.as_mut() {
+            audio.stop();
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -226,6 +231,16 @@ impl LinuxHp {
 }
 
 impl HpBackend for LinuxHp {
+    fn answer_sent(&self, session: SessionId) {
+        let slot = self.media.lock().unwrap();
+        if let Some(m) = slot.as_ref()
+            && m.session == session
+            && let Some(audio) = m.audio.as_ref()
+        {
+            audio.activate();
+        }
+    }
+
     fn available(&self, peer: IpAddr) -> bool {
         match &*self.media.lock().unwrap() {
             Some(m) => !m.running() || m.peer == peer,
@@ -356,7 +371,7 @@ impl HpBackend for LinuxHp {
             };
             match crate::audio::sender::AudioSender::start(params) {
                 Ok(sender) => {
-                    info!(ssrc = format_args!("{:#x}", a.ssrc), "HP audio started");
+                    info!(ssrc = format_args!("{:#x}", a.ssrc), "HP audio prepared");
                     Some(sender)
                 }
                 Err(e) => {
@@ -378,7 +393,7 @@ impl HpBackend for LinuxHp {
             })?;
         *slot = Some(Media {
             session,
-            _audio: audio,
+            audio,
             peer: peer_ip,
             stop,
             thread: Some(thread),

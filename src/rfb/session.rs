@@ -728,7 +728,9 @@ impl Session {
             }
             Err(e) => return Err(e.context("parsing MediaStreamConfiguration")),
         };
-        self.out.send(&reply).await
+        self.out.send(&reply).await?;
+        blocking(|| hp.answer_sent(self.id));
+        Ok(())
     }
 
     async fn set_encryption(&mut self, cmd: u16, methods: &[u32]) -> Result<()> {
@@ -1528,6 +1530,42 @@ mod tests {
             video1: offer(2),
             video2: None,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn successful_media_answer_activates_backend() {
+        struct DeferredHp(Arc<Log>);
+        impl media::HpBackend for DeferredHp {
+            fn ports(&self) -> MediaPorts {
+                MediaPorts::default()
+            }
+            fn configure(
+                &self,
+                _: SessionId,
+                _: SocketAddr,
+                _: MediaStreamConfig,
+            ) -> Result<Option<MediaAnswer>> {
+                self.0.push("prepared".into());
+                Ok(Some(MediaAnswer::default()))
+            }
+            fn answer_sent(&self, _: SessionId) {
+                self.0.push("activated".into());
+            }
+        }
+        let log = Arc::new(Log::default());
+        let mut cfg = test_config();
+        cfg.hp = Some(Arc::new(DeferredHp(log.clone())));
+        let (mut client, server) = start(cfg).await.unwrap();
+        let mut msgs = vec![2, 0, 0, 1];
+        msgs.extend_from_slice(&ENC_MEDIA_STREAM.to_be_bytes());
+        msgs.extend_from_slice(&media_config().encode());
+        client.write_all(&msgs).await.unwrap();
+        let answer = media::answer_update(&MediaAnswer::default());
+        read_until(&mut client, "media answer", |got| has_seq(got, &answer)).await;
+        wait_until("audio activation", || log.has("activated")).await;
+        assert_eq!(*log.0.lock().unwrap(), ["prepared", "activated"]);
+        drop(client);
+        let _ = server.await.unwrap();
     }
 
     /// A msg 29 during HP stops the media and offers a new stream (1010 type 1), as Apple's

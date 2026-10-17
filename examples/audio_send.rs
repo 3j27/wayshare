@@ -119,12 +119,13 @@ fn encode(
 #[cfg(target_os = "linux")]
 fn capture(secs: u64) -> Result<()> {
     use wayshare::audio::capture::MonitorCapture;
-    let mut cap = MonitorCapture::open(None)?;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut cap = MonitorCapture::open(None, &stop)?.expect("capture was not cancelled");
     let mut pcm = [0i16; 960];
     for s in 0..secs {
         let mut peak = 0i32;
         for _ in 0..100 {
-            cap.read_frame(&mut pcm)?;
+            cap.read_frame(&mut pcm, &stop)?;
             peak = peak.max(pcm.iter().map(|&x| (x as i32).abs()).max().unwrap_or(0));
         }
         println!(
@@ -149,6 +150,7 @@ fn stream(dest: &str, secs: u64) -> Result<()> {
         encoder: Default::default(),
         device: None,
     })?;
+    s.activate();
     std::thread::sleep(Duration::from_secs(secs));
     println!("running after {secs}s: {}", s.running());
     s.stop();

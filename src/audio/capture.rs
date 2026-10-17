@@ -1,15 +1,16 @@
-//! System audio capture from the default sink's monitor through libpulse-simple (served by
-//! pipewire-pulse), loaded at runtime. Read-only: records a monitor, never changes routing.
+//! Cancellable monitor capture through libpulse, loaded at runtime.
+//! The private mainloop never blocks; no routing or volume settings are changed.
 
 use std::ffi::{CString, c_char, c_int, c_void};
-
-use anyhow::{Result, anyhow, ensure};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use super::rtp::{CHANNELS, CLOCK_RATE, SAMPLES_PER_FRAME};
+use anyhow::{Result, ensure};
 
-const PA_STREAM_RECORD: c_int = 2;
-const PA_SAMPLE_S16LE: c_int = 3;
 pub const DEFAULT_MONITOR: &str = "@DEFAULT_MONITOR@";
+/// Lets fragsize set the source latency, as `pa_simple_new` did.
+const PA_STREAM_ADJUST_LATENCY: c_int = 0x2000;
 
 #[repr(C)]
 struct SampleSpec {
@@ -17,7 +18,6 @@ struct SampleSpec {
     rate: u32,
     channels: u8,
 }
-
 #[repr(C)]
 struct BufferAttr {
     maxlength: u32,
@@ -26,62 +26,78 @@ struct BufferAttr {
     minreq: u32,
     fragsize: u32,
 }
+type Ptr = *mut c_void;
 
-type NewFn = unsafe extern "C" fn(
-    *const c_char,
-    *const c_char,
-    c_int,
-    *const c_char,
-    *const c_char,
-    *const SampleSpec,
-    *const c_void,
-    *const BufferAttr,
-    *mut c_int,
-) -> *mut c_void;
-type ReadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *mut c_int) -> c_int;
-type FreeFn = unsafe extern "C" fn(*mut c_void);
-
-pub struct MonitorCapture {
-    s: *mut c_void,
-    read: ReadFn,
-    free: FreeFn,
-    _lib: *mut c_void,
+macro_rules! pulse_api {
+    ($($name:ident: $ty:ty),* $(,)?) => {
+        struct Api { $($name: $ty,)* _lib: libloading::Library }
+        impl Api {
+            fn load() -> Result<Self> {
+                // SAFETY: libpulse is the system ABI. Each symbol's signature
+                // matches its declaration in the PulseAudio public headers.
+                // The library stays loaded until after all objects are freed.
+                unsafe {
+                    let lib = libloading::Library::new("libpulse.so.0")?;
+                    Ok(Self { $($name: *lib.get::<$ty>(concat!(stringify!($name), "\0").as_bytes())?,)* _lib: lib })
+                }
+            }
+        }
+    };
+}
+pulse_api! {
+    pa_mainloop_new: unsafe extern "C" fn() -> Ptr,
+    pa_mainloop_free: unsafe extern "C" fn(Ptr),
+    pa_mainloop_get_api: unsafe extern "C" fn(Ptr) -> Ptr,
+    pa_mainloop_iterate: unsafe extern "C" fn(Ptr, c_int, *mut c_int) -> c_int,
+    pa_context_new: unsafe extern "C" fn(Ptr, *const c_char) -> Ptr,
+    pa_context_connect: unsafe extern "C" fn(Ptr, *const c_char, c_int, *const c_void) -> c_int,
+    pa_context_get_state: unsafe extern "C" fn(Ptr) -> c_int,
+    pa_context_disconnect: unsafe extern "C" fn(Ptr),
+    pa_context_unref: unsafe extern "C" fn(Ptr),
+    pa_stream_new: unsafe extern "C" fn(Ptr, *const c_char, *const SampleSpec, *const c_void) -> Ptr,
+    pa_stream_connect_record: unsafe extern "C" fn(Ptr, *const c_char, *const BufferAttr, c_int) -> c_int,
+    pa_stream_get_state: unsafe extern "C" fn(Ptr) -> c_int,
+    pa_stream_peek: unsafe extern "C" fn(Ptr, *mut *const c_void, *mut usize) -> c_int,
+    pa_stream_drop: unsafe extern "C" fn(Ptr) -> c_int,
+    pa_stream_disconnect: unsafe extern "C" fn(Ptr) -> c_int,
+    pa_stream_unref: unsafe extern "C" fn(Ptr),
 }
 
-// SAFETY: `s` is the pa_simple stream owned only by this value (freed only in `Drop`) and is
-// used only through `&mut self`, so it is never accessed from two threads at once.
-unsafe impl Send for MonitorCapture {}
+pub struct MonitorCapture {
+    api: Api,
+    mainloop: Ptr,
+    context: Ptr,
+    stream: Ptr,
+    fragment_offset: usize,
+}
 
 impl MonitorCapture {
-    /// `device`: a PulseAudio source name; `None` = the default sink's monitor.
-    pub fn open(device: Option<&str>) -> Result<Self> {
-        let name = CString::new("libpulse-simple.so.0").unwrap();
-        // SAFETY: The name is NUL-terminated, and a null result is rejected on the next line.
-        let lib = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        ensure!(!lib.is_null(), "libpulse-simple.so.0 not found");
-        let sym = |n: &str| -> Result<*mut c_void> {
-            let c = CString::new(n).unwrap();
-            // SAFETY: `lib` is non-null (checked above), the name is NUL-terminated, and a null
-            // result is rejected below.
-            let p = unsafe { libc::dlsym(lib, c.as_ptr()) };
-            if p.is_null() {
-                Err(anyhow!("libpulse-simple lacks {n}"))
-            } else {
-                Ok(p)
-            }
-        };
-        // SAFETY: Each pointer is non-null (checked in `sym`) and names the libpulse-simple
-        // function whose C signature matches the target type. The library is never dlclosed, so
-        // the pointers stay valid.
-        let (new, read, free): (NewFn, ReadFn, FreeFn) = unsafe {
-            (
-                std::mem::transmute::<*mut c_void, NewFn>(sym("pa_simple_new")?),
-                std::mem::transmute::<*mut c_void, ReadFn>(sym("pa_simple_read")?),
-                std::mem::transmute::<*mut c_void, FreeFn>(sym("pa_simple_free")?),
-            )
+    /// Returns None on cancellation, including during connection setup.
+    pub fn open(device: Option<&str>, stop: &AtomicBool) -> Result<Option<Self>> {
+        Self::open_at(device, None, stop)
+    }
+
+    fn open_at(
+        device: Option<&str>,
+        server: Option<&str>,
+        stop: &AtomicBool,
+    ) -> Result<Option<Self>> {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let api = Api::load()?;
+        // SAFETY: constructor has no arguments; null is rejected below.
+        let mainloop = unsafe { (api.pa_mainloop_new)() };
+        ensure!(!mainloop.is_null(), "pa_mainloop_new failed");
+        let mut cap = Self {
+            api,
+            mainloop,
+            context: std::ptr::null_mut(),
+            stream: std::ptr::null_mut(),
+            fragment_offset: 0,
         };
         let spec = SampleSpec {
-            format: PA_SAMPLE_S16LE,
+            format: 3,
             rate: CLOCK_RATE,
             channels: CHANNELS as u8,
         };
@@ -92,62 +108,245 @@ impl MonitorCapture {
             minreq: u32::MAX,
             fragsize: SAMPLES_PER_FRAME * CHANNELS * 2,
         };
-        let app = CString::new("wayshare").unwrap();
-        let stream = CString::new("screen sharing audio").unwrap();
         let dev = CString::new(device.unwrap_or(DEFAULT_MONITOR))?;
-        let mut err = 0;
-        // SAFETY: Every pointer argument is null or points to a value that lives past the call,
-        // and `err` is a valid out pointer. A null stream is rejected below.
-        let s = unsafe {
-            new(
-                std::ptr::null(),
-                app.as_ptr(),
-                PA_STREAM_RECORD,
-                dev.as_ptr(),
-                stream.as_ptr(),
+        let server = server.map(CString::new).transpose()?;
+        // SAFETY: mainloop is live; names are NUL terminated. All objects are
+        // owned by cap, and Drop handles partial initialization on errors.
+        unsafe {
+            cap.context = (cap.api.pa_context_new)(
+                (cap.api.pa_mainloop_get_api)(mainloop),
+                c"wayshare".as_ptr(),
+            );
+            ensure!(!cap.context.is_null(), "pa_context_new failed");
+            ensure!(
+                (cap.api.pa_context_connect)(
+                    cap.context,
+                    server.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                    0,
+                    std::ptr::null()
+                ) == 0,
+                "pa_context_connect failed"
+            );
+        }
+        if !cap.wait_ready(false, stop)? {
+            return Ok(None);
+        }
+        // SAFETY: context is ready; sample spec, attrs and names live through
+        // their calls. No callback retains Rust stack pointers.
+        unsafe {
+            cap.stream = (cap.api.pa_stream_new)(
+                cap.context,
+                c"screen sharing audio".as_ptr(),
                 &spec,
                 std::ptr::null(),
-                &attr,
-                &mut err,
-            )
-        };
-        ensure!(
-            !s.is_null(),
-            "pa_simple_new({}) failed: error {err}",
-            dev.to_string_lossy()
-        );
-        Ok(Self {
-            s,
-            read,
-            free,
-            _lib: lib,
-        })
+            );
+            ensure!(!cap.stream.is_null(), "pa_stream_new failed");
+            ensure!(
+                (cap.api.pa_stream_connect_record)(
+                    cap.stream,
+                    dev.as_ptr(),
+                    &attr,
+                    PA_STREAM_ADJUST_LATENCY,
+                ) == 0,
+                "pa_stream_connect_record failed"
+            );
+        }
+        if !cap.wait_ready(true, stop)? {
+            return Ok(None);
+        }
+        Ok(Some(cap))
     }
 
-    /// Blocks for one 10 ms frame of interleaved stereo i16.
+    fn iterate(&mut self) -> Result<()> {
+        // SAFETY: private live mainloop, used on its owning audio thread only.
+        ensure!(
+            unsafe { (self.api.pa_mainloop_iterate)(self.mainloop, 0, std::ptr::null_mut()) } >= 0,
+            "PulseAudio mainloop failed"
+        );
+        Ok(())
+    }
+
+    fn wait_ready(&mut self, stream: bool, stop: &AtomicBool) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !stop.load(Ordering::Relaxed) {
+            self.iterate()?;
+            // SAFETY: the selected object was constructed before this call.
+            let state = unsafe {
+                if stream {
+                    (self.api.pa_stream_get_state)(self.stream)
+                } else {
+                    (self.api.pa_context_get_state)(self.context)
+                }
+            };
+            let ready = if stream { 2 } else { 4 };
+            if state == ready {
+                return Ok(true);
+            }
+            ensure!(
+                state < ready,
+                "PulseAudio connection failed (state {state})"
+            );
+            ensure!(Instant::now() < deadline, "PulseAudio connection timeout");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(false)
+    }
+
+    /// Reads one frame, returning false on cancellation even if capture is stalled.
     pub fn read_frame(
         &mut self,
         out: &mut [i16; (SAMPLES_PER_FRAME * CHANNELS) as usize],
-    ) -> Result<()> {
-        let mut err = 0;
-        // SAFETY: `self.s` is the live stream from pa_simple_new, `out` is writable for
-        // `out.len() * 2` bytes, and `err` is a valid out pointer.
-        let r = unsafe {
-            (self.read)(
-                self.s,
-                out.as_mut_ptr() as *mut c_void,
-                out.len() * 2,
-                &mut err,
+        stop: &AtomicBool,
+    ) -> Result<bool> {
+        // SAFETY: writable bytes of a live i16 array; all bit patterns are valid.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                out.as_mut_ptr().cast::<u8>(),
+                std::mem::size_of_val(out),
             )
         };
-        ensure!(r == 0, "pa_simple_read failed: error {err}");
-        Ok(())
+        let mut filled = 0;
+        while filled < bytes.len() {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(false);
+            }
+            self.iterate()?;
+            let (mut data, mut len) = (std::ptr::null(), 0);
+            // SAFETY: live recording stream; valid out pointers. Peek's data
+            // stays valid until drop; no pointer is retained across iterations.
+            ensure!(
+                unsafe { (self.api.pa_stream_peek)(self.stream, &mut data, &mut len) } == 0,
+                "pa_stream_peek failed"
+            );
+            if len == 0 {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            ensure!(
+                self.fragment_offset < len,
+                "PulseAudio fragment changed before drop"
+            );
+            let n = (len - self.fragment_offset).min(bytes.len() - filled);
+            if data.is_null() {
+                bytes[filled..filled + n].fill(0); // A PulseAudio hole is silence.
+            } else {
+                // SAFETY: peek returned len readable bytes, and both source
+                // and destination ranges were bounded above. They do not alias.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.cast::<u8>().add(self.fragment_offset),
+                        bytes[filled..].as_mut_ptr(),
+                        n,
+                    )
+                };
+            }
+            self.fragment_offset += n;
+            filled += n;
+            if self.fragment_offset == len {
+                // SAFETY: a nonempty fragment was peeked and fully consumed.
+                ensure!(
+                    unsafe { (self.api.pa_stream_drop)(self.stream) } == 0,
+                    "pa_stream_drop failed"
+                );
+                self.fragment_offset = 0;
+            }
+        }
+        Ok(true)
     }
 }
 
 impl Drop for MonitorCapture {
     fn drop(&mut self) {
-        // SAFETY: `self.s` is the non-null stream from pa_simple_new and is freed only here.
-        unsafe { (self.free)(self.s) };
+        // SAFETY: only successfully created objects are released, in dependency
+        // order, on the owning thread. No callbacks or other threads use them.
+        unsafe {
+            if !self.stream.is_null() {
+                (self.api.pa_stream_disconnect)(self.stream);
+                (self.api.pa_stream_unref)(self.stream);
+            }
+            if !self.context.is_null() {
+                (self.api.pa_context_disconnect)(self.context);
+                (self.api.pa_context_unref)(self.context);
+            }
+            (self.api.pa_mainloop_free)(self.mainloop);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_open_needs_no_audio_server() {
+        assert!(
+            MonitorCapture::open(None, &AtomicBool::new(true))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a running PulseAudio-compatible monitor"]
+    fn live_monitor_read_and_cancel() {
+        let stop = AtomicBool::new(false);
+        let mut cap = MonitorCapture::open(None, &stop).unwrap().unwrap();
+        let mut frame = [0; (SAMPLES_PER_FRAME * CHANNELS) as usize];
+        for _ in 0..10 {
+            assert!(cap.read_frame(&mut frame, &stop).unwrap());
+        }
+        stop.store(true, Ordering::Relaxed);
+        assert!(!cap.read_frame(&mut frame, &stop).unwrap());
+        // Simulate a connected monitor that stops producing data, without
+        // changing the host's audio server or routing.
+        unsafe extern "C" fn empty_peek(
+            _: Ptr,
+            data: *mut *const c_void,
+            len: *mut usize,
+        ) -> c_int {
+            // SAFETY: read_frame supplies valid out pointers for this test stub.
+            unsafe {
+                *data = std::ptr::null();
+                *len = 0;
+            }
+            0
+        }
+        cap.api.pa_stream_peek = empty_peek;
+        stop.store(false, Ordering::Relaxed);
+        let before = Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                stop.store(true, Ordering::Relaxed);
+            });
+            assert!(!cap.read_frame(&mut frame, &stop).unwrap());
+        });
+        assert!(before.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    #[ignore = "requires libpulse.so.0"]
+    fn stalled_audio_connection_can_be_cancelled() {
+        use std::os::unix::net::UnixListener;
+        let path =
+            std::env::temp_dir().join(format!("wayshare-pulse-test-{}.sock", std::process::id()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let stop = AtomicBool::new(false);
+        let before = Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                stop.store(true, Ordering::Relaxed);
+            });
+            let server = format!("unix:{}", path.display());
+            assert!(
+                MonitorCapture::open_at(None, Some(&server), &stop)
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        drop(listener);
+        std::fs::remove_file(path).unwrap();
+        assert!(before.elapsed() < Duration::from_secs(1));
     }
 }

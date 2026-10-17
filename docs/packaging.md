@@ -36,4 +36,4 @@ setting a password.
 | libpulse, plus a PulseAudio-compatible server such as `pipewire-pulse` | optional, loaded at runtime | High Performance audio |
 
 Optional libraries are opened by name (`libva-drm.so.2`, `libx265.so`, `libfdk-aac.so.2`,
-`libpulse-simple.so.0`). On Nix, put them on the runtime library path.
+`libpulse.so.0`). On Nix, put them on the runtime library path.

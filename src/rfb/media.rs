@@ -65,6 +65,8 @@ pub trait HpBackend: Send + Sync {
         peer: SocketAddr,
         config: MediaStreamConfig,
     ) -> Result<Option<MediaAnswer>>;
+    /// Called only after the negotiated media answer has been written successfully.
+    fn answer_sent(&self, _session: super::SessionId) {}
     /// False once media started by `session` has stopped on its own (e.g. RTCP timeout).
     fn active(&self, _session: super::SessionId) -> bool {
         true
