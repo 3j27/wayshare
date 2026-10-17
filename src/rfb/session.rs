@@ -82,6 +82,7 @@ pub async fn run(mut stream: TcpStream, cfg: Arc<Config>, id: SessionId) -> Resu
         shared_clipboard: false,
         clipboard_serial: 0,
         input,
+        display_scale: 1.0,
         keycode_needs_bit1: false,
         display_applied: None,
         dynamic_resolution: false,
@@ -182,7 +183,7 @@ fn is_wheel_block(block: &[u8; 16]) -> bool {
     block[10] == 0xFF && block[11] & 0x78 != 0
 }
 
-/// Counts only: key contents are never logged above trace level.
+/// Aggregates input counts and decoded mouse data; key contents remain trace-only.
 #[derive(Default)]
 struct InputStats {
     keys: u64,
@@ -190,6 +191,10 @@ struct InputStats {
     scroll: u64,
     encrypted: u64,
     enc_keys: u64,
+    msg16_mouse: u64,
+    msg23_mouse: u64,
+    mouse_button_masks: [u64; 8],
+    mouse_raw: Option<(u8, i16, i16)>,
     since: Option<std::time::Instant>,
 }
 
@@ -200,6 +205,8 @@ struct Session {
     shared_clipboard: bool,
     clipboard_serial: u64,
     input: Box<dyn InputSink>,
+    /// The display scale reported by the viewer; mouse events already use framebuffer coordinates.
+    display_scale: f64,
     /// Viewer version > 10: the mac keycode in event blocks also needs flags bit 1.
     keycode_needs_bit1: bool,
     /// Set after a msg 29 resize; sent as DisplayInfo2/DisplayInfo once the new size is live.
@@ -293,6 +300,8 @@ impl Session {
             }
             ClientMessage::EncryptedEvent { flags, mut block } => {
                 ecb_decrypt(&self.auth_key, &mut block);
+                let raw_mouse = EventBlock::parse(&block).ok().and_then(|ev| ev.mouse);
+                record_mouse_stats(&mut self.input_stats, raw_mouse, false);
                 log_event_block("EncryptedEvent", flags, &block);
                 let r =
                     input::apply_block(self.input.as_mut(), flags, &block, self.keycode_needs_bit1);
@@ -311,6 +320,8 @@ impl Session {
                         flags, mut block, ..
                     }) => {
                         ecb_decrypt(&self.auth_key, &mut block);
+                        let raw_mouse = EventBlock::parse(&block).ok().and_then(|ev| ev.mouse);
+                        record_mouse_stats(&mut self.input_stats, raw_mouse, true);
                         log_event_block("EventMessage2/V2", flags, &block);
                         let r = input::apply_block(
                             self.input.as_mut(),
@@ -388,6 +399,7 @@ impl Session {
                         if let Some(display) = self.cfg.display.clone() {
                             match blocking(|| display.configure(self.id, &req)) {
                                 Ok(Some(applied)) => {
+                                    self.display_scale = applied.scale;
                                     info!(
                                         ?applied,
                                         dynamic = self.dynamic_resolution,
@@ -867,6 +879,17 @@ fn log_event_block(what: &str, flags: u8, block: &[u8; 16]) {
         Err(e) => warn!("{what}: {e}"),
     }
 }
+fn record_mouse_stats(stats: &mut InputStats, mouse: Option<(u8, i16, i16)>, event_message2: bool) {
+    if let Some(mouse) = mouse {
+        if event_message2 {
+            stats.msg23_mouse += 1;
+        } else {
+            stats.msg16_mouse += 1;
+        }
+        stats.mouse_button_masks[(mouse.0 & 7) as usize] += 1;
+        stats.mouse_raw = Some(mouse);
+    }
+}
 
 impl Session {
     /// Falls back to RFB framebuffer updates when HP media stopped on its own.
@@ -901,6 +924,12 @@ impl Session {
                 scroll = st.scroll,
                 encrypted = st.encrypted,
                 enc_keys = st.enc_keys,
+                msg16_mouse = st.msg16_mouse,
+                msg23_mouse = st.msg23_mouse,
+                mouse_button_masks = ?st.mouse_button_masks,
+                mouse_last = ?st.mouse_raw,
+                media_active = self.media_active,
+                display_scale = self.display_scale,
                 "input stats"
             );
         }
