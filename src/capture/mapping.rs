@@ -52,10 +52,10 @@ impl Drop for Mapping {
     }
 }
 
-/// CPU access window on a captured buffer; ends the dmabuf CPU access on drop.
+/// CPU pixels borrowed from a synced linear mapping or GBM's detiled view.
 pub struct ReadGuard<'a> {
     bytes: &'a [u8],
-    fd: &'a OwnedFd,
+    fd: Option<&'a OwnedFd>,
     pub stride: usize,
 }
 
@@ -71,7 +71,19 @@ impl<'a> ReadGuard<'a> {
         // height`), so the slice stays inside the mapping, and the `'a` borrow of `map` keeps
         // it mapped. `sync` above brackets CPU access to the dmabuf.
         let bytes = unsafe { std::slice::from_raw_parts(map.ptr.add(offset), map.len - offset) };
-        Ok(Self { bytes, fd, stride })
+        Ok(Self {
+            bytes,
+            fd: Some(fd),
+            stride,
+        })
+    }
+
+    pub(super) fn borrowed(bytes: &'a [u8], stride: usize) -> Self {
+        Self {
+            bytes,
+            fd: None,
+            stride,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -85,7 +97,9 @@ impl<'a> ReadGuard<'a> {
 
 impl Drop for ReadGuard<'_> {
     fn drop(&mut self) {
-        let _ = sync(self.fd, DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END);
+        if let Some(fd) = self.fd {
+            let _ = sync(fd, DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END);
+        }
     }
 }
 
