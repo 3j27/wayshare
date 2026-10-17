@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use gbm::{BufferObjectFlags, Device, Format, Modifier};
 
 use super::Plane;
@@ -70,14 +70,35 @@ impl GbmBuffer {
         read: impl FnOnce(&super::ReadGuard<'_>) -> T,
     ) -> Result<T> {
         let bo = self.bo.lock().unwrap();
-        // The callback consumes GBM's detiled view before map returns and unmaps it.
-        bo.map(0, 0, width, height, |map| {
+        map_read(&bo, width, height, |map| {
             read(&super::ReadGuard::borrowed(
                 map.buffer(),
                 map.stride() as usize,
             ))
         })
-        .context("gbm_bo_map capture buffer")
+        .context("map capture buffer")
+    }
+}
+
+/// Maps `bo` for reading. The callback consumes GBM's detiled view before map returns and
+/// unmaps it.
+fn map_read<'a, T>(
+    bo: &'a gbm::BufferObject<()>,
+    width: u32,
+    height: u32,
+    read: impl FnOnce(&gbm::MappedBufferObject<'a, ()>) -> T,
+) -> Result<T> {
+    // gbm_bo_map signals failure only by returning NULL, and NVIDIA's backend leaves errno
+    // untouched. Clear it so a stale value from an earlier call isn't reported as the cause.
+    // SAFETY: __errno_location returns this thread's errno, which is valid for writes.
+    unsafe { *libc::__errno_location() = 0 };
+    bo.map(0, 0, width, height, read).map_err(map_error)
+}
+
+fn map_error(err: std::io::Error) -> anyhow::Error {
+    match err.raw_os_error() {
+        Some(0) | None => anyhow!("gbm_bo_map returned NULL"),
+        Some(_) => anyhow!("gbm_bo_map returned NULL: {err}"),
     }
 }
 
@@ -106,6 +127,8 @@ pub struct Allocator {
     gbm: Device<Arc<File>>,
     pub memory: Memory,
     udmabuf: Option<File>,
+    /// GBM on this node couldn't map a capture buffer for CPU reads.
+    pub gbm_map_failed: bool,
 }
 
 impl Allocator {
@@ -121,6 +144,7 @@ impl Allocator {
             node,
             memory: Memory::Gpu,
             udmabuf: None,
+            gbm_map_failed: false,
         })
     }
 
@@ -209,6 +233,15 @@ impl Allocator {
                 .create_buffer_object::<()>(width, height, format, flags)?,
             AllocationPath::Udmabuf => unreachable!(),
         };
+        // Nonlinear CPU reads go through gbm_bo_map. Check that it works now, before any
+        // frame is captured, so the caller can pick another capture path.
+        if self.memory == Memory::System
+            && u64::from(bo.modifier()) != MOD_LINEAR
+            && let Err(e) = map_read(&bo, width, height, |_| ())
+        {
+            self.gbm_map_failed = true;
+            return Err(e.context("map capture buffer for CPU reads"));
+        }
         let planes = (0..bo.plane_count() as i32)
             .map(|i| {
                 Ok(Plane {
@@ -353,6 +386,16 @@ mod tests {
         ] {
             assert!(Allocator::allocate_shm(width, height).is_err());
         }
+    }
+
+    #[test]
+    fn map_errors_report_errno_only_when_set() {
+        let err = map_error(std::io::Error::from_raw_os_error(0));
+        assert_eq!(err.to_string(), "gbm_bo_map returned NULL");
+        let err = map_error(std::io::Error::from_raw_os_error(libc::ENOMEM));
+        let msg = err.to_string();
+        assert!(msg.starts_with("gbm_bo_map returned NULL: "), "{msg}");
+        assert!(msg.contains(&format!("os error {}", libc::ENOMEM)), "{msg}");
     }
 
     #[test]

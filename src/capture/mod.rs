@@ -316,6 +316,27 @@ struct Constraints {
     modifiers: Vec<u64>,
     /// Capture into wl_shm instead of a dmabuf.
     shm: bool,
+    /// The compositor offers XRGB8888 over wl_shm (ext-image-copy-capture only).
+    shm_offered: bool,
+}
+
+impl Constraints {
+    fn shm(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            fourcc: PREFERRED_FORMATS[0],
+            modifiers: Vec::new(),
+            shm: true,
+            shm_offered: true,
+        }
+    }
+}
+
+/// Whether to capture through wl_shm instead of a dmabuf. virtio-gpu (virgl) leaves captured
+/// dmabufs empty, and some GBM backends (NVIDIA's) can't map capture buffers for CPU reads.
+fn use_shm(shm_offered: bool, virtio_gpu: bool, gbm_map_failed: bool) -> bool {
+    shm_offered && (virtio_gpu || gbm_map_failed)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -495,9 +516,24 @@ impl State {
             self.pool.push(buf.clone());
             return Ok(buf);
         }
-        let alloc = self
+        let alloc = match self
             .alloc
-            .allocate(c.width, c.height, c.fourcc, &c.modifiers)?;
+            .allocate(c.width, c.height, c.fourcc, &c.modifiers)
+        {
+            Ok(alloc) => alloc,
+            Err(e) if use_shm(c.shm_offered, false, self.alloc.gbm_map_failed) => {
+                tracing::warn!("{e:#}; capturing through wl_shm instead");
+                self.set_constraints(Constraints::shm(c.width, c.height));
+                return self.take_buffer(qh);
+            }
+            Err(e) if self.alloc.gbm_map_failed => {
+                return Err(e.context(
+                    "GBM can't map capture buffers, and the compositor offers no XRGB8888 \
+                     wl_shm fallback through ext-image-copy-capture",
+                ));
+            }
+            Err(e) => return Err(e),
+        };
 
         let import_modifier = alloc::import_modifier(alloc.modifier, &c.modifiers)?;
         let params = self.dmabuf.create_params(qh, ());
@@ -684,23 +720,16 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for State {
             ext_session::Event::Done => {
                 let formats = std::mem::take(&mut state.pending);
                 let shm_formats = std::mem::take(&mut state.pending_shm);
-                if state.shm.is_some()
-                    && state.alloc.is_virtio_gpu()
-                    && shm_formats.contains(&wl_shm::Format::Xrgb8888)
-                {
+                let shm_offered =
+                    state.shm.is_some() && shm_formats.contains(&wl_shm::Format::Xrgb8888);
+                if use_shm(
+                    shm_offered,
+                    shm_offered && state.alloc.is_virtio_gpu(),
+                    state.alloc.gbm_map_failed,
+                ) {
                     let (width, height) = state.pending_size;
-                    tracing::debug!(
-                        width,
-                        height,
-                        "ext capture constraints: wl_shm on virtio-gpu"
-                    );
-                    state.set_constraints(Constraints {
-                        width,
-                        height,
-                        fourcc: PREFERRED_FORMATS[0],
-                        modifiers: Vec::new(),
-                        shm: true,
-                    });
+                    tracing::debug!(width, height, "ext capture constraints: wl_shm");
+                    state.set_constraints(Constraints::shm(width, height));
                     return;
                 }
                 let picked = select_format(&formats, state.alloc.memory);
@@ -731,6 +760,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for State {
                     fourcc,
                     modifiers,
                     shm: false,
+                    shm_offered,
                 });
             }
             ext_session::Event::Stopped => state.stopped = true,
@@ -827,6 +857,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
                     fourcc,
                     modifiers,
                     shm: false,
+                    shm_offered: false,
                 });
                 match state.take_buffer(qh) {
                     Ok(buffer) => {
@@ -990,6 +1021,26 @@ mod tests {
             import_modifier(TILED, &[MOD_INVALID, MOD_LINEAR]).unwrap(),
             MOD_INVALID
         );
+    }
+
+    #[test]
+    fn shm_is_used_on_virtio_gpu_or_after_a_failed_gbm_map() {
+        assert!(!use_shm(true, false, false));
+        assert!(use_shm(true, true, false));
+        assert!(use_shm(true, false, true));
+        assert!(use_shm(true, true, true));
+        for (virtio_gpu, gbm_map_failed) in [(false, false), (true, false), (false, true)] {
+            assert!(!use_shm(false, virtio_gpu, gbm_map_failed));
+        }
+    }
+
+    #[test]
+    fn shm_fallback_constraints_read_xrgb_from_one_linear_plane() {
+        let c = Constraints::shm(1920, 1080);
+        assert!(c.shm && c.shm_offered);
+        assert_eq!((c.width, c.height, c.fourcc), (1920, 1080, XR24));
+        assert!(validate_cpu_format(c.fourcc).is_ok());
+        assert!(c.modifiers.is_empty());
     }
 
     #[test]
