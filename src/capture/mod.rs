@@ -35,6 +35,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1::{self as dmabuf_params, ZwpLinuxBufferParamsV1},
+    zwp_linux_dmabuf_feedback_v1::{self as dmabuf_feedback, ZwpLinuxDmabufFeedbackV1},
     zwp_linux_dmabuf_v1::{self as linux_dmabuf, ZwpLinuxDmabufV1},
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
@@ -199,6 +200,19 @@ impl Capturer {
             bail!("compositor doesn't offer ext-image-copy-capture");
         } else if state.wlr_mgr.is_none() {
             bail!("compositor offers neither ext-image-copy-capture nor wlr-screencopy");
+        } else if let Ok(manager) = globals.bind::<ZwpLinuxDmabufV1, _, _>(&qh, 4..=4, ()) {
+            // Wlr screencopy does not name a device. Implicitly tiled buffers allocated on
+            // another GPU can import successfully yet contain scrambled pixels. Use the
+            // compositor's main device, retaining the v2/v3 binding for legacy format events.
+            let feedback = manager.get_default_feedback(&qh, ());
+            while !state.default_feedback.done {
+                queue.blocking_dispatch(&mut state)?;
+            }
+            feedback.destroy();
+            manager.destroy();
+            let alloc = &mut state.alloc;
+            apply_main_device(&state.default_feedback, |dev| alloc.use_device(dev));
+            tracing::debug!(node = %state.alloc.render_node().display(), "wlr capture device");
         }
         state.output = Some(wl_output);
         Ok(Self { conn, queue, state })
@@ -405,11 +419,68 @@ fn select_format(formats: &[(u32, Vec<u64>)], memory: Memory) -> Option<&(u32, V
     })
 }
 
+#[derive(Default)]
+struct DefaultFeedback {
+    main_device: Option<u64>,
+    done: bool,
+}
+
+impl DefaultFeedback {
+    fn event(&mut self, event: dmabuf_feedback::Event) {
+        match event {
+            dmabuf_feedback::Event::MainDevice { device } => {
+                self.main_device = device.try_into().ok().map(u64::from_ne_bytes);
+            }
+            dmabuf_feedback::Event::Done => self.done = true,
+            // The v3 binding supplies formats. Unused format-table fds are dropped here.
+            _ => {}
+        }
+    }
+
+    fn device(&self) -> Result<u64> {
+        anyhow::ensure!(self.done, "incomplete linux-dmabuf feedback");
+        self.main_device
+            .context("missing or invalid linux-dmabuf main device")
+    }
+}
+
+/// Switches to the compositor's main device. On failure keeps the current node, as the
+/// ext path does, so a missing or unusable main device never stops capture.
+fn apply_main_device(
+    feedback: &DefaultFeedback,
+    use_device: impl FnOnce(u64) -> Result<()>,
+) -> bool {
+    match feedback
+        .device()
+        .and_then(|dev| use_device(dev).with_context(|| format!("dmabuf device {dev:#x}")))
+    {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("wlr capture device: {e:#}; keeping current node");
+            false
+        }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpLinuxDmabufFeedbackV1,
+        event: dmabuf_feedback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.default_feedback.event(event);
+    }
+}
+
 struct State {
     outputs: Vec<(wl_output::WlOutput, Option<String>)>,
     output: Option<wl_output::WlOutput>,
     dmabuf: ZwpLinuxDmabufV1,
     dmabuf_formats: DmabufFormats,
+    default_feedback: DefaultFeedback,
     ext_mgr: Option<ExtImageCopyCaptureManagerV1>,
     ext_src_mgr: Option<ExtOutputImageCaptureSourceManagerV1>,
     wlr_mgr: Option<ZwlrScreencopyManagerV1>,
@@ -452,6 +523,7 @@ impl State {
             // v2 offers formats without modifiers. v4 omits the events used by wlr capture.
             dmabuf: globals.bind(qh, 2..=3, ()).context("zwp_linux_dmabuf_v1")?,
             dmabuf_formats: DmabufFormats::default(),
+            default_feedback: DefaultFeedback::default(),
             ext_mgr: globals.bind(qh, 1..=1, ()).ok(),
             ext_src_mgr: globals.bind(qh, 1..=1, ()).ok(),
             wlr_mgr: globals.bind(qh, 3..=3, ()).ok(),
@@ -851,6 +923,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
                     return;
                 };
                 let (width, height) = state.pending_size;
+                tracing::debug!(width, height, fourcc, ?modifiers, "wlr capture constraints");
                 state.set_constraints(Constraints {
                     width,
                     height,
@@ -965,6 +1038,57 @@ delegate_noop!(State: ZwlrScreencopyManagerV1);
 mod tests {
     use super::*;
     use alloc::{MOD_INVALID, MOD_LINEAR};
+
+    #[test]
+    fn default_feedback_uses_main_device_after_done() {
+        let mut feedback = DefaultFeedback::default();
+        feedback.event(dmabuf_feedback::Event::MainDevice {
+            device: 0x1234u64.to_ne_bytes().to_vec(),
+        });
+        feedback.event(dmabuf_feedback::Event::TrancheTargetDevice {
+            device: 0x5678u64.to_ne_bytes().to_vec(),
+        });
+        assert!(feedback.device().is_err());
+        feedback.event(dmabuf_feedback::Event::Done);
+        assert_eq!(feedback.device().unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn main_device_errors_keep_current_node() {
+        let mut feedback = DefaultFeedback::default();
+        feedback.event(dmabuf_feedback::Event::Done);
+        let mut called = false;
+        assert!(!apply_main_device(&feedback, |_| {
+            called = true;
+            Ok(())
+        }));
+        assert!(!called);
+
+        feedback.event(dmabuf_feedback::Event::MainDevice {
+            device: 0x1234u64.to_ne_bytes().to_vec(),
+        });
+        assert!(!apply_main_device(&feedback, |_| anyhow::bail!(
+            "no render node"
+        )));
+        let mut got = None;
+        assert!(apply_main_device(&feedback, |dev| {
+            got = Some(dev);
+            Ok(())
+        }));
+        assert_eq!(got, Some(0x1234));
+    }
+
+    #[test]
+    fn default_feedback_rejects_missing_or_malformed_device() {
+        for device in [None, Some(vec![0; 4]), Some(vec![0; 9])] {
+            let mut feedback = DefaultFeedback::default();
+            if let Some(device) = device {
+                feedback.event(dmabuf_feedback::Event::MainDevice { device });
+            }
+            feedback.event(dmabuf_feedback::Event::Done);
+            assert!(feedback.device().is_err());
+        }
+    }
 
     const XR24: u32 = u32::from_le_bytes(*b"XR24");
     const AR24: u32 = u32::from_le_bytes(*b"AR24");

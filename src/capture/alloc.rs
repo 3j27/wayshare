@@ -346,6 +346,17 @@ fn is_virtio_gpu(node: &Path) -> bool {
 }
 
 fn render_node_for(dev: u64) -> Result<PathBuf> {
+    // Sysfs names the render node even when only that node is exposed under /dev/dri.
+    let (major, minor) = (libc::major(dev), libc::minor(dev));
+    if let Ok(entries) = std::fs::read_dir(format!("/sys/dev/char/{major}:{minor}/device/drm")) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let node = Path::new("/dev/dri").join(&name);
+            if name.to_string_lossy().starts_with("renderD") && node.exists() {
+                return Ok(node);
+            }
+        }
+    }
     for entry in std::fs::read_dir("/dev/dri")? {
         let path = entry?.path();
         if std::fs::metadata(&path)?.rdev() != dev {
