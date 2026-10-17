@@ -4245,6 +4245,7 @@ pub struct Va {
         minor_version: *mut ::core::ffi::c_int,
     ) -> VAStatus,
     pub vaTerminate: unsafe extern "C" fn(dpy: VADisplay) -> VAStatus,
+    pub vaMaxNumEntrypoints: unsafe extern "C" fn(dpy: VADisplay) -> ::core::ffi::c_int,
     pub vaQueryConfigEntrypoints: unsafe extern "C" fn(
         dpy: VADisplay,
         profile: VAProfile,
@@ -4350,6 +4351,7 @@ impl Va {
         let vaErrorStr = __library.get(b"vaErrorStr\0").map(|sym| *sym)?;
         let vaInitialize = __library.get(b"vaInitialize\0").map(|sym| *sym)?;
         let vaTerminate = __library.get(b"vaTerminate\0").map(|sym| *sym)?;
+        let vaMaxNumEntrypoints = __library.get(b"vaMaxNumEntrypoints\0").map(|sym| *sym)?;
         let vaQueryConfigEntrypoints = __library
             .get(b"vaQueryConfigEntrypoints\0")
             .map(|sym| *sym)?;
@@ -4376,6 +4378,7 @@ impl Va {
             vaErrorStr,
             vaInitialize,
             vaTerminate,
+            vaMaxNumEntrypoints,
             vaQueryConfigEntrypoints,
             vaGetConfigAttributes,
             vaCreateConfig,
@@ -4410,6 +4413,9 @@ impl Va {
     }
     pub unsafe fn vaTerminate(&self, dpy: VADisplay) -> VAStatus {
         (self.vaTerminate)(dpy)
+    }
+    pub unsafe fn vaMaxNumEntrypoints(&self, dpy: VADisplay) -> ::core::ffi::c_int {
+        (self.vaMaxNumEntrypoints)(dpy)
     }
     pub unsafe fn vaQueryConfigEntrypoints(
         &self,

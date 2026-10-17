@@ -121,8 +121,14 @@ impl Display {
     }
 
     fn hevc_entrypoint(&self) -> Option<VAEntrypoint> {
-        let mut eps = [0 as c_int; 32];
+        // SAFETY: `dpy` was initialised in `Display::open` and is live while `self` is.
+        let max = unsafe { va().vaMaxNumEntrypoints(self.dpy) };
+        // A driver reporting no entrypoints has nothing to encode with.
+        let max = usize::try_from(max).ok().filter(|&m| m > 0)?;
+        let mut eps = vec![0 as c_int; max];
         let mut n = 0;
+        // SAFETY: `dpy` is live. libva requires the list to hold `vaMaxNumEntrypoints`
+        // entries and writes the used count to `n`, so `eps` is sized from that query.
         let r = unsafe {
             va().vaQueryConfigEntrypoints(
                 self.dpy,
@@ -131,17 +137,23 @@ impl Display {
                 &mut n,
             )
         };
-        let eps = &eps[..n.clamp(0, 32) as usize];
         if r != 0 {
-            None
-        } else if eps.contains(&(VAEntrypoint::VAEntrypointEncSlice as c_int)) {
-            Some(VAEntrypoint::VAEntrypointEncSlice)
-        } else if eps.contains(&(VAEntrypoint::VAEntrypointEncSliceLP as c_int)) {
-            Some(VAEntrypoint::VAEntrypointEncSliceLP)
-        } else {
-            None
+            return None;
         }
+        // Don't trust `n` past the buffer we handed over.
+        let n = usize::try_from(n).unwrap_or(0).min(eps.len());
+        pick_hevc_entrypoint(&eps[..n])
     }
+}
+
+/// Prefers the full encode entrypoint, falling back to low-power.
+fn pick_hevc_entrypoint(eps: &[c_int]) -> Option<VAEntrypoint> {
+    [
+        VAEntrypoint::VAEntrypointEncSlice,
+        VAEntrypoint::VAEntrypointEncSliceLP,
+    ]
+    .into_iter()
+    .find(|&ep| eps.contains(&(ep as c_int)))
 }
 
 impl Drop for Display {
@@ -962,6 +974,23 @@ mod tests {
         assert!(prepared.is_none());
         assert_eq!(free, [0, 1]);
         assert_eq!(free.pop(), Some(1));
+    }
+
+    #[test]
+    fn hevc_entrypoint_prefers_full_encode_over_low_power() {
+        let lp = VAEntrypoint::VAEntrypointEncSliceLP as c_int;
+        let full = VAEntrypoint::VAEntrypointEncSlice as c_int;
+        let vld = VAEntrypoint::VAEntrypointVLD as c_int;
+        assert_eq!(
+            pick_hevc_entrypoint(&[vld, lp, full]),
+            Some(VAEntrypoint::VAEntrypointEncSlice)
+        );
+        assert_eq!(
+            pick_hevc_entrypoint(&[vld, lp]),
+            Some(VAEntrypoint::VAEntrypointEncSliceLP)
+        );
+        assert_eq!(pick_hevc_entrypoint(&[vld]), None);
+        assert_eq!(pick_hevc_entrypoint(&[]), None);
     }
 }
 

@@ -8,8 +8,8 @@ FUNCTIONS="
   vaCreateSurfaces vaDestroyBuffer vaDestroyConfig vaDestroyContext
   vaDestroySurfaces vaEndPicture vaErrorStr vaExportSurfaceHandle
   vaGetConfigAttributes vaGetDisplayDRM vaInitialize vaMapBuffer
-  vaQueryConfigEntrypoints vaRenderPicture vaSyncBuffer vaSyncSurface
-  vaTerminate vaUnmapBuffer
+  vaMaxNumEntrypoints vaQueryConfigEntrypoints vaRenderPicture vaSyncBuffer
+  vaSyncSurface vaTerminate vaUnmapBuffer
 "
 
 TYPES="
