@@ -16,7 +16,7 @@ pub struct Settings {
     pub name: Option<String>,
     /// Defaults to `$XDG_CONFIG_HOME/wayshare/srp-$USER`.
     pub srp_file: Option<PathBuf>,
-    /// Wayland output to share. Unset: animated test pattern.
+    /// Wayland output to share. Unset: the only enabled monitor.
     pub output: Option<String>,
     /// Resize the output to the viewer's requested display mode, restoring it afterwards.
     pub resize: bool,
@@ -79,6 +79,8 @@ pub struct MdnsSettings {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DevSettings {
+    /// Serve an animated test pattern instead of capturing an output.
+    pub test_pattern: bool,
     pub stream_encryption: bool,
     pub hp_stub_dir: Option<PathBuf>,
     pub hp_swap_keys: bool,
@@ -293,7 +295,7 @@ mod tests {
     #[test]
     fn example_config_parses() {
         let s = Settings::parse(include_str!("../contrib/config.example.toml")).unwrap();
-        assert_eq!(s.output.as_deref(), Some("HEADLESS-1"));
+        assert_eq!(s.output, None);
         assert!(s.hp.enabled && s.input.enabled && s.resize && s.mdns.enabled);
     }
 

@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -44,9 +44,12 @@ struct ServeArgs {
     test_password_file: Option<PathBuf>,
     #[arg(long)]
     name: Option<String>,
-    /// Wayland output to share (Linux), e.g. HEADLESS-1. Unset: test pattern.
+    /// Wayland output to share (Linux), e.g. HEADLESS-1. Unset: the only enabled monitor.
     #[arg(long, alias = "capture")]
     output: Option<String>,
+    /// Serve an animated test pattern instead of a monitor.
+    #[arg(long)]
+    test_pattern: bool,
     #[arg(long, overrides_with = "no_hp")]
     hp: bool,
     #[arg(long)]
@@ -106,6 +109,7 @@ impl ServeArgs {
         if self.hp_bitrate.is_some() {
             s.hp.bitrate = self.hp_bitrate;
         }
+        s.dev.test_pattern |= self.test_pattern;
         s.dev.stream_encryption |= self.stream_encryption;
         s.dev.hp_swap_keys |= self.hp_swap_keys;
         if self.hp_stub_dir.is_some() {
@@ -120,10 +124,25 @@ impl ServeArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Pick a password, monitor and network, then start the service.
+    Setup,
+    /// Check the setup and say how to fix what's missing.
+    Doctor,
+    /// Start the service.
+    Start,
+    /// Stop the service.
+    Stop,
+    /// Restart the service, for example after changing the config.
+    Restart,
+    /// Install the latest release (install.sh installs) and restart the service.
+    Upgrade,
+    /// Stop the service and remove wayshare. Keeps your config and password.
+    Uninstall,
     /// Store an SRP verifier (salt, iterations, v) for a user. The password is not stored.
     SetPassword {
+        /// Defaults to $USER.
         #[arg(long)]
-        user: String,
+        user: Option<String>,
         /// Read the password from this file instead of prompting.
         #[arg(long)]
         password_file: Option<PathBuf>,
@@ -133,71 +152,34 @@ enum Command {
         #[arg(long, default_value_t = srp::DEFAULT_ITERATIONS)]
         iterations: u32,
     },
-    /// Write a systemd user unit that runs this binary (for installs without a package).
-    InstallService,
-}
-
-fn read_password(path: Option<&Path>) -> Result<Vec<u8>> {
-    let pw = match path {
-        Some(p) => {
-            let raw = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
-            let end = raw
-                .iter()
-                .rposition(|&b| b != b'\n' && b != b'\r')
-                .map_or(0, |i| i + 1);
-            raw[..end].to_vec()
-        }
-        None => {
-            let a = rpassword::prompt_password("Password: ")?;
-            let b = rpassword::prompt_password("Again: ")?;
-            if a != b {
-                bail!("passwords do not match");
-            }
-            a.into_bytes()
-        }
-    };
-    if pw.is_empty() {
-        bail!("empty password");
-    }
-    Ok(pw)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    // The interactive commands print their own output; server logs would clutter it.
+    let default_level = if cli.command.is_some() {
+        "error"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level)),
         )
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
-    let cli = Cli::parse();
 
-    if let Some(Command::InstallService) = cli.command {
-        let path = wayshare::service::install()?;
-        println!("wrote {}", path.display());
-        let reload = std::process::Command::new("systemctl")
-            .args(["--user", "daemon-reload"])
-            .status();
-        if !reload.is_ok_and(|s| s.success()) {
-            warn!("systemctl --user daemon-reload failed; run it before starting wayshare");
+    if let Some(command) = cli.command {
+        // Rust ignores SIGPIPE, so `wayshare doctor | head` would panic in println!. Resetting
+        // a signal disposition to the default touches no Rust-owned memory.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
         }
-        return Ok(());
-    }
-
-    if let Some(Command::SetPassword {
-        user,
-        password_file,
-        srp_file,
-        iterations,
-    }) = cli.command
-    {
-        let path = match srp_file {
-            Some(p) => p,
-            None => wayshare::config::default_srp_path(&user)?,
-        };
-        let password = read_password(password_file.as_deref())?;
-        VerifierRecord::generate(&user, &password, iterations).save(&path)?;
-        println!("wrote SRP verifier for {user} to {}", path.display());
+        if let Err(e) = run_command(command) {
+            wayshare::ui::exit_with(e);
+        }
         return Ok(());
     }
 
@@ -208,13 +190,45 @@ async fn main() -> Result<()> {
     run(settings).await
 }
 
-fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "wayshare".into())
+fn run_command(command: Command) -> Result<()> {
+    use wayshare::{service, ui};
+    match command {
+        Command::Setup => wayshare::setup::run(),
+        Command::Doctor => {
+            if !wayshare::doctor::run()? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Command::Start => service::control("start"),
+        Command::Stop => service::control("stop"),
+        Command::Restart => service::control("restart"),
+        Command::Upgrade => service::upgrade(),
+        Command::Uninstall => service::uninstall(),
+        Command::SetPassword {
+            user,
+            password_file,
+            srp_file,
+            iterations,
+        } => {
+            let user = match user {
+                Some(u) => u,
+                None => wayshare::setup::current_user()?,
+            };
+            let path = match srp_file {
+                Some(p) => p,
+                None => wayshare::config::default_srp_path(&user)?,
+            };
+            let password = wayshare::setup::read_password(password_file.as_deref())?;
+            VerifierRecord::generate(&user, &password, iterations).save(&path)?;
+            ui::done(
+                "Password",
+                &format!("saved for {user} in {}", ui::path(&path)),
+            );
+            ui::hint("run `wayshare restart` to use it");
+            Ok(())
+        }
+    }
 }
 
 async fn run(s: Settings) -> Result<()> {
@@ -223,14 +237,14 @@ async fn run(s: Settings) -> Result<()> {
     match VerifierRecord::load(&srp_path) {
         Ok(rec) => auth.srp = Some(rec),
         Err(e) if s.srp_file.is_some() || s.dev.dh_username.is_none() => {
-            return Err(e.context("run `wayshare set-password --user <name>` first"));
+            return Err(e.context("run `wayshare setup` first"));
         }
         Err(_) => {}
     }
     if let (Some(user), Some(path)) = (&s.dev.dh_username, &s.dev.dh_password_file) {
         auth.dh = Some(Arc::new(StaticPassword::from_file(user.clone(), path)?));
     }
-    let host = hostname();
+    let host = wayshare::setup::hostname();
     let name = s.name.clone().unwrap_or_else(|| host.clone());
     let mut cfg = Config::new(name.clone(), 1920, 1080, auth);
     cfg.clipboard = Some(Arc::new(MemoryClipboard::default()));
@@ -239,8 +253,25 @@ async fn run(s: Settings) -> Result<()> {
         cfg.hp = Some(Arc::new(StubHpBackend::new(dir.clone(), s.hp.port)?));
     }
     #[cfg(target_os = "linux")]
-    if let Some(output) = &s.output {
-        wayshare::display::hyprland::Hyprland::from_env()?.check_version()?;
+    let output = if s.dev.test_pattern {
+        None
+    } else {
+        use wayshare::display::DisplayManager;
+        let mut hypr = wayshare::display::hyprland::Hyprland::from_env()?;
+        hypr.check_version()?;
+        match &s.output {
+            Some(o) => Some(o.clone()),
+            None => {
+                let o = wayshare::setup::default_output(&hypr.outputs()?)?;
+                info!(output = %o, "no output configured; sharing the only monitor");
+                Some(o)
+            }
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let output: Option<String> = None;
+    #[cfg(target_os = "linux")]
+    if let Some(output) = &output {
         cfg.frame_source = wayshare::server_linux::capture_factory(Some(output.clone()));
         cfg.cursor_source = wayshare::server_linux::cursor_factory(Some(output.clone()));
         match wayshare::clipboard::wayland::WaylandClipboard::spawn() {
@@ -283,11 +314,11 @@ async fn run(s: Settings) -> Result<()> {
     }
     #[cfg(not(target_os = "linux"))]
     if s.output.is_some() {
-        bail!("output capture is only supported on Linux");
+        anyhow::bail!("output capture is only supported on Linux");
     }
     info!(
         listen = %s.listen,
-        output = ?s.output,
+        ?output,
         hp = cfg.hp.is_some(),
         input = cfg.input.is_some(),
         resize = cfg.display.is_some(),

@@ -21,77 +21,51 @@ Needs Hyprland 0.56 or newer and systemd.
 curl -fsSL https://raw.githubusercontent.com/wesleygrimes/wayshare/main/install.sh | sh
 ```
 
-This puts `wayshare` in `~/.local/bin` and sets up its systemd user service, without sudo.
+This puts `wayshare` in `~/.local/bin`, without sudo.
 Builds are for x86_64 and ARM64.
 
 Other ways to install:
 
-- With [mise](https://mise.jdx.dev): `mise use -g github:wesleygrimes/wayshare`, then
-  `wayshare install-service`
+- With [mise](https://mise.jdx.dev): `mise use -g github:wesleygrimes/wayshare`
 - [From source](docs/development.md#installing-from-source)
-
-wayshare isn't on the AUR or in `omarchy pkg` yet. Those packages are coming soon.
 
 ## Set up
 
-1. Pick a password. Screen Sharing asks for this user name and password when you connect.
-
-   ```sh
-   wayshare set-password --user "$USER"
-   ```
-
-2. Tell wayshare which monitor to share. `hyprctl monitors` lists them; replace `DP-1` with
-   yours.
-
-   ```sh
-   mkdir -p ~/.config/wayshare
-   echo 'output = "DP-1"' > ~/.config/wayshare/config.toml
-   ```
-
-3. Start it with your session:
-
-   ```sh
-   systemctl --user enable --now wayshare
-   ```
-
-   On Omarchy that's all. Elsewhere, if wayshare doesn't come back after you log in again,
-   add [one line to `hyprland.conf`](docs/troubleshooting.md#the-service-doesnt-start-at-login).
-
-4. On the Mac, open the **Screen Sharing** app (search for it with Spotlight), choose
-   **Connection > New** and enter the Linux machine's address, like `192.168.1.20`. Sign in
-   with the password from step 1. To get sharper, low-latency video and sound, pick
-   **High Performance** when it asks (see [High Performance mode](docs/high-performance.md)).
-
-   The machine also shows up in Finder's sidebar under **Network**.
-
-Connection trouble? See [Troubleshooting](docs/troubleshooting.md).
-
-## Upgrade
-
-Run the install command again. It restarts the service for you.
-
-With mise or a package, upgrade the usual way, then restart the service:
+Run this in a terminal on your Hyprland desktop:
 
 ```sh
-systemctl --user restart wayshare
+wayshare setup
 ```
 
-## Uninstall
+It asks for a password, which monitor to share and which network to listen on. Then it
+starts the service and tells you what to type on the Mac. If ufw is blocking the port, it
+offers to add a rule for you, using sudo. Not on Omarchy? If wayshare doesn't come back
+after you log in again, add [one line to `hyprland.conf`](docs/troubleshooting.md#the-service-doesnt-start-at-login).
 
-```sh
-systemctl --user disable --now wayshare
-rm -f ~/.local/bin/wayshare ~/.local/share/systemd/user/wayshare.service
-```
+On the Mac, connect with the **Screen Sharing** app and pick **High Performance** when it
+asks, for sharper, low-latency video and sound.
 
-If you installed with mise or a package, remove it that way too. Your password and settings
-stay in your config directory (usually `~/.config/wayshare`) until you delete it.
+Something not working? Run `wayshare doctor`. It checks each piece and tells you how to fix
+what's missing. [Troubleshooting](docs/troubleshooting.md) covers the rest.
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `wayshare setup` | set up or change the password, monitor and network |
+| `wayshare doctor` | check the setup and say how to fix problems |
+| `wayshare start`, `stop`, `restart` | control the service; restart after editing the config |
+| `wayshare upgrade` | install the latest release and restart |
+| `wayshare uninstall` | stop the service and remove wayshare; keeps `~/.config/wayshare` |
+
+Coming from 0.1.5 or older, which has no `upgrade`, run the install command again, then
+`wayshare restart`. With mise, run `wayshare uninstall` before `mise uninstall`.
 
 ## More
 
 - [Configuration](docs/configuration.md): every setting, keyboard mapping, the sidebar name
 - [High Performance mode](docs/high-performance.md): what it needs, encoders, audio
-- [Firewall](docs/firewall.md): which ports to open
-- [Security](docs/security.md): what's encrypted, and using Tailscale or a VPN
+- [Security](docs/security.md): what's encrypted, ports, and using Tailscale or a VPN
 - [Troubleshooting](docs/troubleshooting.md): logs and the usual problems
 - [Packaging](docs/packaging.md): install layout and dependencies, for distro packagers
 - [Development](docs/development.md): building, tests, live checks

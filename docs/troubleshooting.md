@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the log:
+Start with `wayshare doctor`. For anything it doesn't catch, read the log:
 
 ```sh
 journalctl --user -u wayshare -f
@@ -16,29 +16,19 @@ Hyprland through UWSM reach that target; a plain `Hyprland` launch doesn't. Star
 exec-once = systemctl --user start wayshare
 ```
 
-## "wayshare needs Hyprland 0.56 or newer"
-
-Upgrade Hyprland to 0.56 or newer.
-
 ## The Mac can't connect
 
-- Check the firewall: TCP 5900 has to be open. See [Firewall](firewall.md).
-- Screen Sharing allows one window per address. Close any open window for this machine,
-  including ones behind other windows, and dismiss any leftover alerts.
+Screen Sharing allows one window per address. Close any open window for this machine,
+including ones behind other windows, and dismiss any leftover alerts.
 
 ## The password is rejected
 
 Set it again and restart:
 
 ```sh
-wayshare set-password --user "$USER"
-systemctl --user restart wayshare
+wayshare set-password
+wayshare restart
 ```
-
-## No High Performance
-
-Look for `High Performance mode disabled` or `HP encoder` near the top of the log, then see
-[High Performance mode](high-performance.md).
 
 ## The machine doesn't show up in Finder's sidebar
 

@@ -21,11 +21,10 @@ Rust 1.89 or newer ([rustup](https://rustup.rs) or your distro's package), a C l
 
 ```sh
 cargo install --locked --path .
-wayshare install-service
+wayshare setup
 ```
 
-This puts `wayshare` in `~/.cargo/bin` and its unit in `~/.local/share/systemd/user`. To
-upgrade, run both again, then `systemctl --user restart wayshare`.
+This puts `wayshare` in `~/.cargo/bin` and its unit in `~/.local/share/systemd/user`.
 
 ## mise
 
