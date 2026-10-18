@@ -412,26 +412,79 @@ impl HpBackend for LinuxHp {
 /// Applies msg 29 to a Hyprland output and restores the original mode afterwards.
 pub struct HyprDisplay {
     output: String,
+    resize: bool,
+    exclusive: Option<Mutex<crate::display::exclusive::ExclusiveDesktop>>,
     /// Session that changed the mode, and the mode to restore.
     owner: Mutex<Option<(SessionId, crate::display::OutputInfo)>>,
 }
 
 impl HyprDisplay {
-    pub fn new(output: String) -> Self {
+    pub fn new(output: String, resize: bool, exclusive: bool) -> Self {
         Self {
             output,
+            resize,
+            exclusive: exclusive.then(Mutex::default),
             owner: Mutex::new(None),
         }
+    }
+
+    fn restore_mode(&self, session: SessionId) -> Result<()> {
+        use crate::display::DisplayManager;
+        let original = {
+            let mut owner = self.owner.lock().unwrap();
+            match owner.take() {
+                Some((s, info)) if s == session => info,
+                other => {
+                    *owner = other;
+                    return Ok(());
+                }
+            }
+        };
+        let mut hypr = crate::display::hyprland::Hyprland::from_env()?;
+        let actual = hypr.set_mode(&self.output, &original.mode())?;
+        info!(output = %self.output, ?actual, "output mode restored");
+        Ok(())
+    }
+
+    fn restore_exclusive_with<M: crate::display::exclusive::DesktopManager>(
+        &self,
+        session: SessionId,
+        manager: impl FnOnce() -> Result<M>,
+    ) -> Result<()> {
+        let Some(exclusive) = &self.exclusive else {
+            return Ok(());
+        };
+        let mut exclusive = exclusive.lock().unwrap();
+        // Ownership must be released even if compositor discovery fails.
+        if exclusive.release(session) {
+            exclusive.restore(&mut manager()?)?;
+        }
+        Ok(())
     }
 }
 
 impl crate::rfb::DisplayControl for HyprDisplay {
+    fn session_started(&self, session: SessionId) -> Result<()> {
+        if let Some(exclusive) = &self.exclusive {
+            let mut hypr = crate::display::hyprland::Hyprland::from_env()?;
+            exclusive
+                .lock()
+                .unwrap()
+                .acquire(session, &self.output, &mut hypr)?;
+            info!(session, output = %self.output, "exclusive display acquired");
+        }
+        Ok(())
+    }
+
     fn configure(
         &self,
         session: SessionId,
         request: &crate::display::apple::DisplayRequest,
     ) -> Result<Option<crate::rfb::AppliedDisplay>> {
         use crate::display::DisplayManager;
+        if !self.resize {
+            return Ok(None);
+        }
         let Some(pref) = request.displays.first().and_then(|d| d.preferred()) else {
             return Ok(None);
         };
@@ -470,21 +523,11 @@ impl crate::rfb::DisplayControl for HyprDisplay {
     }
 
     fn restore(&self, session: SessionId) -> Result<()> {
-        use crate::display::DisplayManager;
-        let original = {
-            let mut owner = self.owner.lock().unwrap();
-            match owner.take() {
-                Some((s, info)) if s == session => info,
-                other => {
-                    *owner = other;
-                    return Ok(());
-                }
-            }
-        };
-        let mut hypr = crate::display::hyprland::Hyprland::from_env()?;
-        let actual = hypr.set_mode(&self.output, &original.mode())?;
-        info!(output = %self.output, ?actual, "output mode restored");
-        Ok(())
+        let resized = self.restore_mode(session);
+        // Always release exclusive ownership, even if restoring the shared mode failed.
+        let exclusive =
+            self.restore_exclusive_with(session, crate::display::hyprland::Hyprland::from_env);
+        resized.and(exclusive)
     }
 }
 
@@ -504,4 +547,76 @@ pub fn input_factory(
         info!(output = %output, width = w, height = h, "input injection enabled");
         Ok(Box::new(sink) as Box<dyn crate::input::InputSink>)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::OutputInfo;
+    use crate::display::exclusive::{DesktopManager, DesktopSnapshot};
+    use std::sync::atomic::AtomicUsize;
+
+    struct FakeDesktop(Arc<AtomicUsize>);
+
+    impl DesktopManager for FakeDesktop {
+        fn snapshot(&mut self) -> Result<DesktopSnapshot> {
+            Ok(DesktopSnapshot {
+                outputs: vec![OutputInfo {
+                    name: "DP-1".into(),
+                    width: 1920,
+                    height: 1080,
+                    refresh_hz: 60.0,
+                    scale: 1.0,
+                    x: 0,
+                    y: 0,
+                    focused: true,
+                    disabled: false,
+                    transform: 0,
+                    active_workspace: None,
+                }],
+                workspaces: Vec::new(),
+            })
+        }
+
+        fn disable_output(&mut self, _: &str) -> Result<()> {
+            unreachable!("only the shared output exists");
+        }
+
+        fn restore_desktop(&mut self, _: &DesktopSnapshot) -> Result<()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn discovery_failure_releases_viewer_and_next_session_recovers() {
+        let restores = Arc::new(AtomicUsize::new(0));
+        let mut manager = FakeDesktop(restores.clone());
+        let display = HyprDisplay::new("DP-1".into(), false, true);
+        {
+            let mut exclusive = display.exclusive.as_ref().unwrap().lock().unwrap();
+            exclusive.acquire(1, "DP-1", &mut manager).unwrap();
+            exclusive.acquire(2, "DP-1", &mut manager).unwrap();
+        }
+        display
+            .restore_exclusive_with::<FakeDesktop>(1, || {
+                panic!("discovery must not run while another viewer remains")
+            })
+            .unwrap();
+        assert!(
+            display
+                .restore_exclusive_with::<FakeDesktop>(2, || {
+                    anyhow::bail!("simulated discovery failure");
+                })
+                .is_err()
+        );
+        {
+            let mut exclusive = display.exclusive.as_ref().unwrap().lock().unwrap();
+            exclusive.acquire(3, "DP-1", &mut manager).unwrap();
+        }
+        // A leaked viewer would take acquire's fast path and never retry restoration.
+        assert_eq!(restores.load(Ordering::Relaxed), 1);
+        display.restore_exclusive_with(3, || Ok(manager)).unwrap();
+        assert_eq!(restores.load(Ordering::Relaxed), 2);
+    }
 }

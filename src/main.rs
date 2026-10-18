@@ -69,6 +69,11 @@ struct ServeArgs {
     resize: bool,
     #[arg(long)]
     no_resize: bool,
+    /// Disable non-shared monitors until the last authenticated viewer disconnects.
+    #[arg(long, overrides_with = "no_exclusive")]
+    exclusive: bool,
+    #[arg(long)]
+    no_exclusive: bool,
     #[arg(long, overrides_with = "no_mdns")]
     mdns: bool,
     #[arg(long)]
@@ -102,6 +107,7 @@ impl ServeArgs {
         s.hp.enabled = flag(self.hp, self.no_hp, s.hp.enabled);
         s.input.enabled = flag(self.input, self.no_input, s.input.enabled);
         s.resize = flag(self.resize, self.no_resize, s.resize);
+        s.exclusive = flag(self.exclusive, self.no_exclusive, s.exclusive);
         s.mdns.enabled = flag(self.mdns, self.no_mdns, s.mdns.enabled);
         if let Some(v) = self.hp_port {
             s.hp.port = v;
@@ -290,9 +296,11 @@ async fn run(s: Settings) -> Result<()> {
                 s.keyboard()?,
             ));
         }
-        if s.resize {
+        if s.resize || s.exclusive {
             cfg.display = Some(Arc::new(wayshare::server_linux::HyprDisplay::new(
                 output.clone(),
+                s.resize,
+                s.exclusive,
             )));
         }
         if s.hp.enabled && s.dev.hp_stub_dir.is_none() {
@@ -321,7 +329,8 @@ async fn run(s: Settings) -> Result<()> {
         ?output,
         hp = cfg.hp.is_some(),
         input = cfg.input.is_some(),
-        resize = cfg.display.is_some(),
+        resize = s.resize && cfg.display.is_some(),
+        exclusive = s.exclusive,
         "starting"
     );
     let _mdns = if s.mdns.enabled {
@@ -355,4 +364,27 @@ async fn shutdown_signal() {
     }
     #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclusive_flags_override_config_independently_of_resize() {
+        for (flags, expected) in [
+            (vec!["--exclusive"], true),
+            (vec!["--no-exclusive"], false),
+            (vec!["--exclusive", "--no-exclusive"], false),
+            (vec!["--no-exclusive", "--exclusive"], true),
+        ] {
+            let mut settings =
+                Settings::parse("output = 'DP-1'\nexclusive = true\nresize = false").unwrap();
+            let cli = Cli::try_parse_from(std::iter::once("wayshare").chain(flags)).unwrap();
+            cli.serve.apply(&mut settings);
+            assert_eq!(settings.exclusive, expected);
+            assert!(!settings.resize);
+            settings.validate().unwrap();
+        }
+    }
 }

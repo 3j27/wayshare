@@ -20,6 +20,8 @@ pub struct Settings {
     pub output: Option<String>,
     /// Resize the output to the viewer's requested display mode, restoring it afterwards.
     pub resize: bool,
+    /// Disable other outputs while authenticated viewers are connected, then restore them.
+    pub exclusive: bool,
     pub hp: HpSettings,
     pub input: InputSettings,
     pub mdns: MdnsSettings,
@@ -96,6 +98,7 @@ impl Default for Settings {
             srp_file: None,
             output: None,
             resize: true,
+            exclusive: false,
             hp: HpSettings::default(),
             input: InputSettings::default(),
             mdns: MdnsSettings::default(),
@@ -194,6 +197,9 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.exclusive && self.output.is_none() {
+            bail!("exclusive mode needs an output to share");
+        }
         if self.hp.chroma == Chroma::Yuv444 && self.hp.encoder != Encoder::X265 {
             bail!(
                 "hp.chroma = \"444\" needs hp.encoder = \"x265\" (VAAPI encodes Main 4:2:0 only)"
@@ -242,6 +248,7 @@ mod tests {
         let s = Settings::parse("").unwrap();
         assert_eq!(s, Settings::default());
         assert!(s.hp.enabled && s.input.enabled && s.resize && s.mdns.enabled);
+        assert!(!s.exclusive);
         assert_eq!(s.listen.port(), 5900);
         assert_eq!(s.keyboard().unwrap().command, ModTarget::Super);
     }
@@ -255,6 +262,7 @@ mod tests {
             srp_file = "/tmp/srp"
             output = "HEADLESS-1"
             resize = false
+            exclusive = true
             [hp]
             enabled = false
             port = 6000
@@ -274,6 +282,7 @@ mod tests {
         .unwrap();
         assert_eq!(s.output.as_deref(), Some("HEADLESS-1"));
         assert!(!s.resize && !s.hp.enabled && s.dev.hp_swap_keys);
+        assert!(s.exclusive);
         assert_eq!((s.hp.port, s.hp.bitrate), (6000, Some(30_000_000)));
         let k = s.keyboard().unwrap();
         assert_eq!(
@@ -286,6 +295,8 @@ mod tests {
     #[test]
     fn rejects_bad_values() {
         assert!(Settings::parse("bogus = 1").is_err());
+        assert!(Settings::parse("exclusive = true").is_err());
+        assert!(Settings::parse("output = 'DP-1'\nexclusive = true\nresize = false").is_ok());
         assert!(Settings::parse("[hp]\nchroma = \"444\"").is_err());
         assert!(Settings::parse("[hp]\nchroma = \"444\"\nencoder = \"x265\"").is_ok());
         assert!(Settings::parse("[input]\ncommand_key = \"hyper\"").is_err());

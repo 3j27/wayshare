@@ -1,6 +1,7 @@
 //! Output sizing so the shared desktop matches the client's window and Retina scale.
 
 pub mod apple;
+pub mod exclusive;
 pub mod hyprland;
 
 use anyhow::Result;
@@ -37,6 +38,8 @@ pub struct OutputInfo {
     pub y: i32,
     pub focused: bool,
     pub disabled: bool,
+    pub transform: u32,
+    pub active_workspace: Option<i64>,
 }
 
 impl OutputInfo {

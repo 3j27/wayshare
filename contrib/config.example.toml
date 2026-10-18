@@ -6,6 +6,7 @@ listen = "0.0.0.0:5900"               # one address, e.g. Tailscale's, to listen
 # srp_file = "/home/alice/.config/wayshare/srp-alice"   # default: srp-$USER next to this file
 # output = "DP-1"                     # default: the only enabled monitor
 resize = true                         # match the viewer's display mode, restore afterwards
+exclusive = false                     # disable other monitors while viewers are connected
 
 [hp]
 enabled = true

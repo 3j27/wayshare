@@ -51,7 +51,21 @@ missing Linux system packages but never uses sudo.
 `mise run build` is now a dev build; pass `--release` for an optimized build.
 
 `audit` downloads the advisory database, so it needs network. `gen-vaapi-sys` needs libva
-headers and clang. Nothing here needs a live Hyprland session.
+headers and clang. Normal checks do not need a live Hyprland session.
+
+### Live exclusive-display test
+
+This ignored test briefly disables other monitors, checks that workspaces move onto
+the selected output, then restores the layout and workspace assignments. Run it only
+from a live Hyprland desktop, with the output that must stay enabled named explicitly:
+
+```sh
+env -u HYPRLAND_INSTANCE_SIGNATURE -u WAYLAND_DISPLAY WAYSHARE_TEST_OUTPUT=DP-1 \
+  cargo test --locked live_exclusive_round_trip -- --ignored --nocapture
+```
+
+Cleanup also runs if a test assertion fails. A killed process cannot run cleanup;
+use `hyprctl reload` to recover the configured monitor layout if needed.
 
 ## Build times
 

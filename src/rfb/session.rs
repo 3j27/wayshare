@@ -111,6 +111,10 @@ pub async fn run(mut stream: TcpStream, cfg: Arc<Config>, id: SessionId) -> Resu
         clip: ClipboardSync::default(),
     };
 
+    if let Some(display) = &s.cfg.display {
+        blocking(|| display.session_started(id)).context("preparing session displays")?;
+    }
+
     let mut tick = tokio::time::interval(FRAME_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = async {
@@ -1104,6 +1108,11 @@ mod tests {
 
     struct FakeDisplay(Arc<Log>);
     impl DisplayControl for FakeDisplay {
+        fn session_started(&self, session: SessionId) -> Result<()> {
+            self.0.push(format!("start {session}"));
+            Ok(())
+        }
+
         fn configure(
             &self,
             session: SessionId,
@@ -1367,6 +1376,7 @@ mod tests {
         msgs.extend_from_slice(&[5, 0, 0, 1, 0, 1]);
         session_with(log.clone(), &msgs, "pointer 1").await.unwrap();
         for e in [
+            "start 7",
             "configure 7",
             "pointer 1",
             "release",
@@ -1381,6 +1391,7 @@ mod tests {
     async fn no_cursor_source_before_auth() {
         let log = Arc::new(Log::default());
         let mut cfg = test_config();
+        cfg.display = Some(Arc::new(FakeDisplay(log.clone())));
         let cursor_log = log.clone();
         cfg.cursor_source = Arc::new(move || {
             cursor_log.push("cursor".into());
@@ -1396,6 +1407,50 @@ mod tests {
         assert_eq!(drive_client(&mut client, "wes", "nope").await.unwrap(), 1);
         assert!(server.await.unwrap().is_err());
         assert!(!log.has("cursor"));
+        assert!(!log.has("start 7"));
+        assert!(!log.has("restore 7"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn display_lifecycle_without_a_resize_request() {
+        let log = Arc::new(Log::default());
+        let mut cfg = test_config();
+        cfg.display = Some(Arc::new(FakeDisplay(log.clone())));
+        let (client, server) = start(cfg).await.unwrap();
+        wait_until("display start", || log.has("start 7")).await;
+        drop(client);
+        server.await.unwrap().unwrap();
+        assert_eq!(*log.0.lock().unwrap(), ["start 7", "restore 7"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_display_start_still_runs_teardown() {
+        struct FailedDisplay(Arc<Log>);
+        impl DisplayControl for FailedDisplay {
+            fn session_started(&self, _: SessionId) -> Result<()> {
+                self.0.push("start".into());
+                anyhow::bail!("simulated partial display failure");
+            }
+            fn configure(
+                &self,
+                _: SessionId,
+                _: &apple::DisplayRequest,
+            ) -> Result<Option<AppliedDisplay>> {
+                unreachable!()
+            }
+            fn restore(&self, _: SessionId) -> Result<()> {
+                self.0.push("restore".into());
+                Ok(())
+            }
+        }
+        let log = Arc::new(Log::default());
+        let mut cfg = test_config();
+        cfg.display = Some(Arc::new(FailedDisplay(log.clone())));
+        let (client, server) = start(cfg).await.unwrap();
+        let error = server.await.unwrap().unwrap_err();
+        assert!(format!("{error:#}").contains("partial display failure"));
+        assert_eq!(*log.0.lock().unwrap(), ["start", "restore"]);
+        drop(client);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1405,7 +1460,13 @@ mod tests {
         msgs.extend_from_slice(&[5, 0, 0x02, 0x9a, 0, 1]);
         let r = session_with(log.clone(), &msgs, "release").await;
         assert!(r.unwrap_err().to_string().contains("panic"));
-        for e in ["configure 7", "release", "hp stop 7", "restore 7"] {
+        for e in [
+            "start 7",
+            "configure 7",
+            "release",
+            "hp stop 7",
+            "restore 7",
+        ] {
             assert!(log.has(e), "missing {e:?} in {:?}", log.0.lock().unwrap());
         }
     }

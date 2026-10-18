@@ -460,6 +460,8 @@ mod tests {
             y: 0,
             focused,
             disabled,
+            transform: 0,
+            active_workspace: None,
         }
     }
 

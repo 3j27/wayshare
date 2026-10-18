@@ -9,6 +9,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use super::exclusive::{DesktopManager, DesktopSnapshot, WorkspaceInfo};
 use super::{DisplayManager, DisplayMode, OutputInfo};
 
 const MIN_VERSION: (u64, u64) = (0, 56);
@@ -67,6 +68,35 @@ impl Hyprland {
             position,
             &fmt_num(mode.scale),
         ))
+    }
+
+    fn workspaces(&self) -> Result<Vec<WorkspaceInfo>> {
+        parse_workspaces(&self.request("j/workspaces")?)
+    }
+
+    fn wait_outputs(&mut self, expected: &[OutputInfo]) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let current = self.outputs()?;
+            if expected.iter().all(|saved| {
+                current
+                    .iter()
+                    .find(|o| o.name == saved.name)
+                    .is_none_or(|now| {
+                        !now.disabled
+                            && now.width == saved.width
+                            && now.height == saved.height
+                            && now.x == saved.x
+                            && now.y == saved.y
+                            && (now.scale - saved.scale).abs() < 1e-3
+                            && now.transform == saved.transform
+                    })
+            }) {
+                return Ok(());
+            }
+            ensure!(Instant::now() < deadline, "monitor restoration timed out");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -141,6 +171,63 @@ fn lua_monitor_rule(output: &str, mode: &str, position: &str, scale: &str) -> St
     )
 }
 
+// JSON string escapes are not all valid Lua; quote workspace names as Lua literals.
+fn lua_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => {
+                let mut bytes = [0; 4];
+                for byte in c.encode_utf8(&mut bytes).bytes() {
+                    out.push_str(&format!("\\{byte:03}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn restore_output_command(output: &OutputInfo) -> Result<String> {
+    check_name(&output.name)?;
+    Ok(format!(
+        "eval hl.monitor({{ output = {}, disabled = false, mode = \"{}x{}@{}\", position = \"{}x{}\", scale = {}, transform = {} }})",
+        lua_string(&output.name),
+        output.width,
+        output.height,
+        fmt_num(output.refresh_hz),
+        output.x,
+        output.y,
+        fmt_num(output.scale),
+        output.transform,
+    ))
+}
+
+fn parse_workspaces(json: &str) -> Result<Vec<WorkspaceInfo>> {
+    let value: Value = serde_json::from_str(json).context("workspaces JSON")?;
+    value
+        .as_array()
+        .context("workspaces: not an array")?
+        .iter()
+        .map(|w| {
+            Ok(WorkspaceInfo {
+                id: w["id"].as_i64().context("workspace: missing id")?,
+                name: w["name"]
+                    .as_str()
+                    .context("workspace: missing name")?
+                    .into(),
+                monitor: w["monitor"]
+                    .as_str()
+                    .context("workspace: missing monitor")?
+                    .into(),
+            })
+        })
+        .collect()
+}
+
 fn parse_version(json: &str) -> Result<String> {
     let v: Value = serde_json::from_str(json).context("version JSON")?;
     Ok(v["version"]
@@ -189,6 +276,8 @@ pub fn parse_monitors(json: &str) -> Result<Vec<OutputInfo>> {
                 y: i("y")? as i32,
                 focused: m["focused"].as_bool().unwrap_or(false),
                 disabled: m["disabled"].as_bool().unwrap_or(false),
+                transform: m["transform"].as_u64().unwrap_or(0) as u32,
+                active_workspace: m["activeWorkspace"]["id"].as_i64(),
             })
         })
         .collect()
@@ -247,6 +336,110 @@ impl DisplayManager for Hyprland {
     }
 }
 
+impl DesktopManager for Hyprland {
+    fn snapshot(&mut self) -> Result<DesktopSnapshot> {
+        Ok(DesktopSnapshot {
+            outputs: self.outputs()?,
+            workspaces: self.workspaces()?,
+        })
+    }
+
+    fn disable_output(&mut self, output: &str) -> Result<()> {
+        check_name(output)?;
+        self.ok(&format!(
+            "eval hl.monitor({{ output = {}, disabled = true }})",
+            lua_string(output)
+        ))?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self
+                .outputs()?
+                .iter()
+                .find(|o| o.name == output)
+                .is_none_or(|o| o.disabled)
+            {
+                return Ok(());
+            }
+            ensure!(Instant::now() < deadline, "disabling {output} timed out");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn restore_desktop(&mut self, snapshot: &DesktopSnapshot) -> Result<()> {
+        let current = self.outputs()?;
+        let mut errors = Vec::new();
+        let mut expected = Vec::new();
+        for output in snapshot.outputs.iter().filter(|o| !o.disabled) {
+            // Rules survive unplugging. Clear disabled=true even for absent outputs,
+            // without waiting for them or creating an output, so replugging works.
+            match restore_output_command(output).and_then(|cmd| self.ok(&cmd)) {
+                Ok(()) => {
+                    if current.iter().any(|o| o.name == output.name) {
+                        expected.push(output.clone());
+                    }
+                }
+                Err(e) => errors.push(format!("restoring {}: {e:#}", output.name)),
+            }
+        }
+        if let Err(e) = self.wait_outputs(&expected) {
+            errors.push(format!("{e:#}"));
+        }
+        let active = self.outputs()?;
+        let workspaces = self.workspaces()?;
+        let available = |name: &str| active.iter().any(|o| o.name == name && !o.disabled);
+        let exists = |id| workspaces.iter().any(|w| w.id == id);
+        // Re-enabling monitors alone leaves their workspaces on the shared output.
+        for workspace in &snapshot.workspaces {
+            if !available(&workspace.monitor) || !exists(workspace.id) {
+                continue;
+            }
+            let command = format!(
+                "eval hl.dispatch(hl.dsp.workspace.move({{ workspace = {}, monitor = {} }}))",
+                lua_string(&workspace.selector()),
+                lua_string(&workspace.monitor),
+            );
+            if let Err(e) = self.ok(&command) {
+                errors.push(format!("restoring workspace {}: {e:#}", workspace.id));
+            }
+        }
+        for output in snapshot
+            .outputs
+            .iter()
+            .filter(|o| !o.disabled && available(&o.name))
+        {
+            let Some(workspace) = output
+                .active_workspace
+                .filter(|&id| exists(id))
+                .and_then(|id| snapshot.workspaces.iter().find(|w| w.id == id))
+            else {
+                continue;
+            };
+            let command = format!(
+                "eval hl.dispatch(hl.dsp.focus({{ workspace = {} }}))",
+                lua_string(&workspace.selector())
+            );
+            if let Err(e) = self.ok(&command) {
+                errors.push(format!("restoring active workspace: {e:#}"));
+            }
+        }
+        if let Some(output) = snapshot
+            .outputs
+            .iter()
+            .find(|o| o.focused && available(&o.name))
+        {
+            let command = format!(
+                "eval hl.dispatch(hl.dsp.focus({{ monitor = {} }}))",
+                lua_string(&output.name)
+            );
+            if let Err(e) = self.ok(&command) {
+                errors.push(format!("restoring focus: {e:#}"));
+            }
+        }
+        ensure!(errors.is_empty(), "{}", errors.join("; "));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +482,210 @@ mod tests {
         );
         assert!(check_name("HEADLESS-1").is_ok());
         assert!(check_name("x\" }) os.execute(\"").is_err());
+        assert_eq!(lua_string("a\"\\\n\u{1}9"), "\"a\\\"\\\\\\010\\0019\"");
+        assert_eq!(lua_string("日本語"), "\"日本語\"");
+    }
+
+    fn monitors_json(outputs: &[OutputInfo]) -> String {
+        serde_json::to_string(
+            &outputs
+                .iter()
+                .map(|o| {
+                    serde_json::json!({
+                        "name": o.name, "width": o.width, "height": o.height,
+                        "refreshRate": o.refresh_hz, "scale": o.scale, "x": o.x, "y": o.y,
+                        "focused": o.focused, "disabled": o.disabled, "transform": o.transform,
+                        "activeWorkspace": { "id": o.active_workspace },
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    fn fake_ipc(script: Vec<(String, String)>) -> (Hyprland, std::thread::JoinHandle<()>) {
+        use std::os::unix::net::UnixListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "wayshare-desktop-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("socket");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let thread = std::thread::spawn(move || {
+            for (command, reply) in script {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut client = loop {
+                    match listener.accept() {
+                        Ok((client, _)) => break client,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing IPC command: {command}");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(e) => panic!("accept: {e}"),
+                    }
+                };
+                client
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = [0u8; 4096];
+                let n = client.read(&mut buf).unwrap();
+                assert_eq!(std::str::from_utf8(&buf[..n]).unwrap(), command);
+                client.write_all(reply.as_bytes()).unwrap();
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        });
+        (Hyprland::with_socket(path), thread)
+    }
+
+    fn saved_desktop() -> DesktopSnapshot {
+        let mut outputs = parse_monitors(MONITORS).unwrap();
+        outputs[0].active_workspace = Some(1);
+        outputs[0].transform = 1;
+        outputs[1].active_workspace = Some(2);
+        DesktopSnapshot {
+            workspaces: outputs
+                .iter()
+                .enumerate()
+                .map(|(i, o)| WorkspaceInfo {
+                    id: i as i64 + 1,
+                    name: (i + 1).to_string(),
+                    monitor: o.name.clone(),
+                })
+                .collect(),
+            outputs,
+        }
+    }
+
+    #[test]
+    fn snapshots_monitor_metadata_and_workspaces() {
+        let saved = saved_desktop();
+        let (mut hypr, thread) = fake_ipc(vec![
+            ("j/monitors all".into(), monitors_json(&saved.outputs)),
+            (
+                "j/workspaces".into(),
+                r#"[{"id":1,"name":"dev","monitor":"HEADLESS-1"}]"#.into(),
+            ),
+        ]);
+        let snapshot = hypr.snapshot().unwrap();
+        assert_eq!(snapshot.outputs, saved.outputs);
+        assert_eq!(snapshot.workspaces[0].selector(), "1");
+        assert_eq!(snapshot.workspaces[0].monitor, "HEADLESS-1");
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn restore_does_not_convert_active_vrr_into_a_configured_policy() {
+        let mut json: Value = serde_json::from_str(MONITORS).unwrap();
+        let original = parse_monitors(MONITORS).unwrap();
+        for active in [false, true] {
+            json[0]["vrr"] = Value::Bool(active);
+            let outputs = parse_monitors(&json.to_string()).unwrap();
+            assert_eq!(outputs, original);
+            let command = restore_output_command(&outputs[0]).unwrap();
+            assert_eq!(
+                command,
+                r#"eval hl.monitor({ output = "HEADLESS-1", disabled = false, mode = "3456x2160@60", position = "0x0", scale = 2, transform = 0 })"#
+            );
+            assert!(!command.contains("vrr"));
+        }
+    }
+
+    #[test]
+    fn unplugged_outputs_get_enabled_rules_without_waiting_for_replug() {
+        let saved = saved_desktop();
+        let (mut hypr, thread) = fake_ipc(vec![
+            ("j/monitors all".into(), "[]".into()),
+            (
+                restore_output_command(&saved.outputs[0]).unwrap(),
+                "ok".into(),
+            ),
+            (
+                restore_output_command(&saved.outputs[1]).unwrap(),
+                "ok".into(),
+            ),
+            ("j/monitors all".into(), "[]".into()),
+            ("j/monitors all".into(), "[]".into()),
+            ("j/workspaces".into(), "[]".into()),
+        ]);
+        hypr.restore_desktop(&saved).unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn disable_waits_for_the_output_to_be_disabled() {
+        let mut saved = saved_desktop();
+        saved.outputs[0].disabled = true;
+        let (mut hypr, thread) = fake_ipc(vec![
+            (
+                r#"eval hl.monitor({ output = "HEADLESS-1", disabled = true })"#.into(),
+                "ok".into(),
+            ),
+            ("j/monitors all".into(), monitors_json(&saved.outputs)),
+        ]);
+        hypr.disable_output("HEADLESS-1").unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn restore_outputs_before_workspaces_and_focus() {
+        let mut saved = saved_desktop();
+        let ready = monitors_json(&saved.outputs);
+        let mut disabled = saved.outputs.clone();
+        disabled[0].disabled = true;
+        let mut unplugged = saved.outputs[0].clone();
+        unplugged.name = "DP-gone".into();
+        saved.outputs.push(unplugged);
+        saved.workspaces.push(WorkspaceInfo {
+            id: 3,
+            name: "3".into(),
+            monitor: "DP-gone".into(),
+        });
+        saved.workspaces.push(WorkspaceInfo {
+            id: 4,
+            name: "4".into(),
+            monitor: "HEADLESS-1".into(),
+        });
+        let (mut hypr, thread) = fake_ipc(vec![
+            ("j/monitors all".into(), monitors_json(&disabled)),
+            (restore_output_command(&saved.outputs[0]).unwrap(), "ok".into()),
+            (restore_output_command(&saved.outputs[1]).unwrap(), "ok".into()),
+            (restore_output_command(&saved.outputs[2]).unwrap(), "ok".into()),
+            ("j/monitors all".into(), ready.clone()),
+            ("j/monitors all".into(), ready),
+            ("j/workspaces".into(), r#"[{"id":1,"name":"1","monitor":"ARDTEST-1"},{"id":2,"name":"2","monitor":"ARDTEST-1"},{"id":3,"name":"3","monitor":"ARDTEST-1"},{"id":5,"name":"new","monitor":"ARDTEST-1"}]"#.into()),
+            (r#"eval hl.dispatch(hl.dsp.workspace.move({ workspace = "1", monitor = "HEADLESS-1" }))"#.into(), "ok".into()),
+            (r#"eval hl.dispatch(hl.dsp.workspace.move({ workspace = "2", monitor = "ARDTEST-1" }))"#.into(), "ok".into()),
+            (r#"eval hl.dispatch(hl.dsp.focus({ workspace = "1" }))"#.into(), "ok".into()),
+            (r#"eval hl.dispatch(hl.dsp.focus({ workspace = "2" }))"#.into(), "ok".into()),
+            (r#"eval hl.dispatch(hl.dsp.focus({ monitor = "HEADLESS-1" }))"#.into(), "ok".into()),
+        ]);
+        hypr.restore_desktop(&saved).unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn restore_continues_after_an_output_error() {
+        let saved = saved_desktop();
+        let mut disabled = saved.outputs.clone();
+        disabled[0].disabled = true;
+        let ready = monitors_json(&disabled);
+        let (mut hypr, thread) = fake_ipc(vec![
+            ("j/monitors all".into(), ready.clone()),
+            (restore_output_command(&saved.outputs[0]).unwrap(), "error".into()),
+            (restore_output_command(&saved.outputs[1]).unwrap(), "ok".into()),
+            ("j/monitors all".into(), ready.clone()),
+            ("j/monitors all".into(), ready),
+            ("j/workspaces".into(), r#"[{"id":1,"name":"1","monitor":"ARDTEST-1"},{"id":2,"name":"2","monitor":"ARDTEST-1"}]"#.into()),
+            (r#"eval hl.dispatch(hl.dsp.workspace.move({ workspace = "2", monitor = "ARDTEST-1" }))"#.into(), "ok".into()),
+            (r#"eval hl.dispatch(hl.dsp.focus({ workspace = "2" }))"#.into(), "ok".into()),
+        ]);
+        assert!(hypr.restore_desktop(&saved).is_err());
+        thread.join().unwrap();
     }
 
     #[test]

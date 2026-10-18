@@ -56,15 +56,19 @@ pub struct AppliedDisplay {
     pub scale: f64,
 }
 
-/// Resizes the shared output to match the viewer (msg 29).
+/// Manages display changes owned by authenticated sessions.
 pub trait DisplayControl: Send + Sync {
+    /// Called after authentication with session teardown already armed.
+    fn session_started(&self, _session: SessionId) -> Result<()> {
+        Ok(())
+    }
     /// Returns `None` when another session already owns the output's mode.
     fn configure(
         &self,
         session: SessionId,
         request: &crate::display::apple::DisplayRequest,
     ) -> Result<Option<AppliedDisplay>>;
-    /// Puts the output back the way it was, if `session` changed it.
+    /// Releases this session's display changes, even if session startup failed.
     fn restore(&self, session: SessionId) -> Result<()>;
 }
 
