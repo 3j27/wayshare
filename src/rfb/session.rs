@@ -266,6 +266,19 @@ impl Session {
                 self.encodings = list;
                 debug!(encoding = self.encoding, "selected encoding");
                 self.offer_media_stream().await?;
+                // A viewer that sees msg 18 advertised waits for display info before starting
+                // Standard mode; it only fakes one for servers without SetEncryption.
+                if self.cfg.stream_encryption && !self.supports(ENC_MEDIA_STREAM) {
+                    let (w, h) = self.fb_size;
+                    let s = self.display_scale;
+                    let points = ((f64::from(w) / s) as u16, (f64::from(h) / s) as u16);
+                    self.send_display_info(AppliedDisplay {
+                        pixels: self.fb_size,
+                        points,
+                        scale: s,
+                    })
+                    .await?;
+                }
             }
             ClientMessage::FramebufferUpdateRequest {
                 incremental,
@@ -755,6 +768,8 @@ impl Session {
             .send(&crypt::encryption_update(&self.auth_key, &key, &iv))
             .await?;
         self.out.enc = Some(RecordWriter::new(&key, &iv));
+        // The viewer also re-keys its ECB event encryptor with the stream key on 1103.
+        self.auth_key = key;
         *self.keys.lock().unwrap() = Some((key, iv));
         info!("stream encryption on (server to client)");
         Ok(())
