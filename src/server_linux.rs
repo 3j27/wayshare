@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use crate::capture::CaptureSource;
 use crate::encode::{EncoderBackend, EncoderConfig};
 use crate::hp::negotiation::{self, AnswerParams, Offer};
-use crate::rfb::media::{HpBackend, MediaAnswer, MediaPorts, MediaStreamConfig};
+use crate::rfb::media::{HpBackend, MediaAnswer, MediaPorts, MediaStreamConfig, OutputResize};
 use crate::rfb::session::canonical_ip;
 use crate::rfb::{CursorSourceFactory, FrameSourceFactory, SessionId};
 use crate::source::{CursorImage, CursorSource, Frame, FrameSource};
@@ -69,22 +69,22 @@ pub fn capture_factory(output: Option<String>) -> FrameSourceFactory {
     })
 }
 
+fn output_scale(output: Option<&str>) -> Option<f64> {
+    use crate::display::DisplayManager;
+    let outs = crate::display::hyprland::Hyprland::from_env()
+        .and_then(|mut h| h.outputs())
+        .ok()?;
+    outs.into_iter()
+        .find(|o| output.is_none_or(|n| o.name == n))
+        .map(|o| o.scale)
+}
+
 /// The cursor theme's pointer, drawn locally by the viewer (it asks for no cursor in the
 /// video). Hyprland paints its cursor into captures regardless, so it is hidden while any
 /// session holds one of these.
 pub fn cursor_factory(output: Option<String>) -> CursorSourceFactory {
     Arc::new(move || {
-        let scale = crate::display::hyprland::Hyprland::from_env()
-            .and_then(|mut h| {
-                use crate::display::DisplayManager;
-                h.outputs()
-            })
-            .ok()
-            .and_then(|outs| {
-                outs.into_iter()
-                    .find(|o| output.as_ref().is_none_or(|n| &o.name == n))
-            })
-            .map_or(1.0, |o| o.scale);
+        let scale = output_scale(output.as_deref()).unwrap_or(1.0);
         let image = match crate::cursor::default_pointer(scale) {
             Ok(img) => Some(img),
             Err(e) => {
@@ -172,6 +172,7 @@ struct Media {
     peer: IpAddr,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    resized_to: Arc<Mutex<Option<OutputResize>>>,
 }
 
 impl Media {
@@ -218,16 +219,14 @@ impl LinuxHp {
 }
 
 impl LinuxHp {
-    fn output_size(&self) -> Result<(u32, u32)> {
+    fn output_info(&self) -> Result<crate::display::OutputInfo> {
         use crate::display::DisplayManager;
         let mut hypr = crate::display::hyprland::Hyprland::from_env()?;
         let name = self.output.as_deref().unwrap_or_default();
-        let out = hypr
-            .outputs()?
+        hypr.outputs()?
             .into_iter()
             .find(|o| self.output.is_none() || o.name == name)
-            .with_context(|| format!("output {name:?} not found"))?;
-        Ok((out.width, out.height))
+            .with_context(|| format!("output {name:?} not found"))
     }
 }
 
@@ -257,6 +256,14 @@ impl HpBackend for LinuxHp {
             .is_some_and(|m| m.session == session && m.running())
     }
 
+    fn take_output_resize(&self, session: SessionId) -> Option<OutputResize> {
+        let slot = self.media.lock().unwrap();
+        let m = slot
+            .as_ref()
+            .filter(|m| m.session == session && !m.running())?;
+        m.resized_to.lock().unwrap().take()
+    }
+
     fn stop(&self, session: SessionId) {
         let mut slot = self.media.lock().unwrap();
         if slot.as_ref().is_some_and(|m| m.session == session) {
@@ -283,7 +290,10 @@ impl HpBackend for LinuxHp {
         peer: SocketAddr,
         config: MediaStreamConfig,
     ) -> Result<Option<MediaAnswer>> {
-        let stream_size = self.output_size()?;
+        let output = self.output_info()?;
+        let stream_size = (output.width, output.height);
+        let px = |v: u32| v.min(u16::MAX as u32) as u16;
+        let pixels = (px(output.width), px(output.height));
         let video = Offer::parse(&config.video1.offer).context("parsing video offer")?;
         let audio = Offer::parse(&config.audio.offer).context("parsing audio offer")?;
         let v = negotiation::answer(
@@ -384,13 +394,25 @@ impl HpBackend for LinuxHp {
             None
         };
         let stop = Arc::new(AtomicBool::new(false));
+        let resized_to = Arc::new(Mutex::new(None));
         let thread_stop = stop.clone();
+        let thread_resized_to = resized_to.clone();
         let thread = std::thread::Builder::new()
             .name("hp-media".into())
-            .spawn(move || {
-                if let Err(e) = media::run_media(params, &thread_stop) {
-                    warn!("HP media stopped: {e:#}");
+            .spawn(move || match media::run_media(params, &thread_stop) {
+                Ok(media::MediaEnd::Stopped) => {}
+                Ok(media::MediaEnd::OutputResized {
+                    width,
+                    height,
+                    first_frame_mismatch,
+                }) => {
+                    let px = |v: u32| v.min(u16::MAX as u32) as u16;
+                    *thread_resized_to.lock().unwrap() = Some(OutputResize {
+                        pixels: (px(width), px(height)),
+                        first_frame_mismatch,
+                    });
                 }
+                Err(e) => warn!("HP media stopped: {e:#}"),
             })?;
         *slot = Some(Media {
             session,
@@ -398,9 +420,18 @@ impl HpBackend for LinuxHp {
             peer: peer_ip,
             stop,
             thread: Some(thread),
+            resized_to,
         });
 
         Ok(Some(MediaAnswer {
+            display: Some(crate::rfb::AppliedDisplay {
+                pixels,
+                points: (
+                    (pixels.0 as f64 / output.scale).round() as u16,
+                    (pixels.1 as f64 / output.scale).round() as u16,
+                ),
+                scale: output.scale,
+            }),
             flags: 1,
             audio: a.bytes,
             video1: v.bytes,

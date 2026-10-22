@@ -42,12 +42,20 @@ pub struct MediaStreamConfig {
     pub video2: Option<StreamOffer>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaAnswer {
+    /// Geometry used to build this answer; not part of the media wire payload.
+    pub display: Option<super::AppliedDisplay>,
     pub flags: u32,
     pub audio: Vec<u8>,
     pub video1: Vec<u8>,
     pub video2: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputResize {
+    pub pixels: (u16, u16),
+    pub first_frame_mismatch: bool,
 }
 
 /// Implemented by the High Performance media module.
@@ -70,6 +78,10 @@ pub trait HpBackend: Send + Sync {
     /// False once media started by `session` has stopped on its own (e.g. RTCP timeout).
     fn active(&self, _session: super::SessionId) -> bool {
         true
+    }
+    /// Returns a stopped stream's resize once.
+    fn take_output_resize(&self, _session: super::SessionId) -> Option<OutputResize> {
+        None
     }
     /// Stops media started by `session`, if any. Called on every session exit.
     fn stop(&self, _session: super::SessionId) {}
@@ -355,6 +367,7 @@ mod tests {
     #[test]
     fn answer_layout_matches_screensharingd() {
         let msg = answer_update(&MediaAnswer {
+            display: None,
             flags: 1,
             audio: vec![0xa; 3],
             video1: vec![0xb; 5],
