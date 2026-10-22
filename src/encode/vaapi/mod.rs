@@ -1177,6 +1177,16 @@ impl Session {
                     // object fd, and each is wrapped once.
                     self._exported.push(unsafe { OwnedFd::from_raw_fd(o.fd) });
                 }
+                let objects = &d.objects[..d.num_objects as usize];
+                if objects
+                    .iter()
+                    .any(|o| o.drm_format_modifier == DRM_FORMAT_MOD_INVALID)
+                {
+                    // The tiling lives in driver metadata (radeonsi before GFX9). GL imports
+                    // each plane separately and can't follow it, so its NV12 writes come out
+                    // scrambled in the encoded picture.
+                    bail!("VA exported an implicit layout");
+                }
                 if d.num_layers != 2 {
                     bail!("expected 2 NV12 layers, got {}", d.num_layers);
                 }
@@ -1352,6 +1362,9 @@ unsafe fn read_coded(dpy: VADisplay, buf: VABufferID) -> Result<Vec<u8>> {
     }
     Ok(data)
 }
+
+/// DRM_FORMAT_MOD_INVALID: the layout is implied by the buffer, not described by a modifier.
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
 fn rect(y: u32, height: u32, width: u32) -> VARectangle {
     VARectangle {
