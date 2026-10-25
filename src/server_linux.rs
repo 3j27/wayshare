@@ -61,6 +61,13 @@ impl FrameSource for CaptureFrames {
     }
 }
 
+/// Capture a real frame, rather than treating successful IPC or an open port as readiness.
+pub fn check_capture(output: Option<&str>) -> Result<()> {
+    CaptureSource::new(output).map(|_| ()).context(
+        "screen capture unavailable; check the running Hyprland session, Wayland environment and capture device permissions; run `wayshare doctor` for details",
+    )
+}
+
 pub fn capture_factory(output: Option<String>) -> FrameSourceFactory {
     Arc::new(move || {
         let src = CaptureSource::new(output.as_deref())?;

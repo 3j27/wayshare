@@ -41,7 +41,9 @@ impl CaptureSource {
                 return Ok(s);
             }
         }
-        bail!("no frame from compositor within 5 s")
+        bail!(
+            "no frame from compositor within 5 s; wake the shared monitor if it is powered off or suspended, then retry"
+        )
     }
 
     /// How long `advance` waits for a new frame before reporting no change.

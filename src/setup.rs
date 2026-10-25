@@ -18,9 +18,27 @@ pub fn run() -> Result<()> {
     ui::title("wayshare setup");
     let mut hypr =
         Hyprland::from_env().context("run `wayshare setup` inside your Hyprland session")?;
-    hypr.check_version()?;
-    let config_path = config_dir()?.join("config.toml");
+    hypr.check_version().context(
+        "no usable Hyprland session; run `wayshare setup` in a terminal inside your Hyprland desktop (SSH requires an already running desktop for this user)",
+    )?;
+    let outputs = hypr
+        .outputs()
+        .context("reading monitors from the Hyprland session")?;
+    #[cfg(target_os = "linux")]
+    {
+        // Validate Wayland before prompting or writing passwords/configuration. IPC discovery
+        // alone does not establish that this process can use the display socket.
+        crate::display::connect_wayland().context(
+            "cannot access the Wayland session; run `wayshare setup` inside your Hyprland desktop; unset stale WAYLAND_DISPLAY and HYPRLAND_INSTANCE_SIGNATURE values when using SSH",
+        )?;
+    }
     let settings = Settings::load(None)?;
+    let output = choose_output(&outputs, settings.output.as_deref())?;
+    #[cfg(target_os = "linux")]
+    ui::spin("Checking screen capture…", || {
+        crate::server_linux::check_capture(Some(&output))
+    })?;
+    let config_path = config_dir()?.join("config.toml");
 
     let mut user = current_user()?;
     let srp_path = settings.srp_path()?;
@@ -44,7 +62,6 @@ pub fn run() -> Result<()> {
         VerifierRecord::generate(&user, &password, srp::DEFAULT_ITERATIONS).save(&srp_path)?;
     }
 
-    let output = choose_output(&hypr.outputs()?, settings.output.as_deref())?;
     let addrs = interface_addrs();
     let listen = choose_listen(settings.listen, &addrs)?;
     let text = match std::fs::read_to_string(&config_path) {
@@ -75,7 +92,10 @@ pub fn run() -> Result<()> {
         systemctl(&["enable", "wayshare"])?;
         systemctl(&["restart", "wayshare"])
     })?;
-    ui::done("Service", "running, starts when you log in");
+    ui::spin("Checking service readiness…", || {
+        crate::service::wait_ready(settings.listen)
+    })?;
+    ui::done("Service", "ready, starts when you log in");
 
     let bound = addrs.iter().find(|a| IpAddr::V4(a.ip) == listen.ip());
     let ip = bound.map(|a| a.ip).or_else(lan_ipv4);

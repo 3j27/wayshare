@@ -1,9 +1,11 @@
 //! The systemd user unit that `wayshare setup` writes for installs without a package, and the
 //! commands that drive it.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use demand::Confirm;
@@ -69,6 +71,68 @@ pub fn unit_property(name: &str) -> String {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+/// A listener is ready only if it can initialize capture and send the RFB greeting.
+pub fn check_ready(listen: SocketAddr) -> Result<()> {
+    let ip = match listen.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    let address = SocketAddr::new(ip, listen.port());
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1))
+        .with_context(|| format!("connecting to {address}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(6)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+    let mut version = [0; 12];
+    stream
+        .read_exact(&mut version)
+        .context("service closed or stalled before its RFB greeting")?;
+    anyhow::ensure!(
+        &version == crate::rfb::handshake::SERVER_VERSION,
+        "unexpected RFB greeting"
+    );
+    stream.write_all(&version)?;
+    let mut count = [0];
+    stream.read_exact(&mut count).context(
+        "service closed before offering authentication (screen capture may have failed)",
+    )?;
+    if count[0] == 0 {
+        let mut length = [0; 4];
+        stream.read_exact(&mut length)?;
+        let length = u32::from_be_bytes(length) as usize;
+        anyhow::ensure!(length <= 4096, "oversized RFB failure reason");
+        let mut reason = vec![0; length];
+        stream.read_exact(&mut reason)?;
+        bail!(
+            "service rejected connection: {}",
+            String::from_utf8_lossy(&reason)
+        );
+    }
+    let mut types = vec![0; count[0] as usize];
+    stream
+        .read_exact(&mut types)
+        .context("incomplete authentication offer")?;
+    anyhow::ensure!(
+        types.contains(&crate::rfb::handshake::SECURITY_SRP)
+            || types.contains(&crate::rfb::handshake::SECURITY_DH),
+        "no supported authentication method offered"
+    );
+    Ok(())
+}
+
+pub fn wait_ready(listen: SocketAddr) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match check_ready(listen) {
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() >= deadline => {
+                return Err(e.context("wayshare is not ready; check `journalctl --user -u wayshare -n 50 --no-pager` and run `wayshare doctor` inside the Hyprland desktop"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 
 /// `wayshare start`, `stop` and `restart`.
@@ -213,6 +277,44 @@ pub fn uninstall() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe_reply(reply: Vec<u8>) -> Result<()> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .write_all(crate::rfb::handshake::SERVER_VERSION)
+                .unwrap();
+            let mut version = [0; 12];
+            stream.read_exact(&mut version).unwrap();
+            stream.write_all(&reply).unwrap();
+        });
+        let result = check_ready(address);
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn readiness_requires_a_complete_authentication_offer() {
+        assert!(probe_reply(vec![1, 36]).is_ok());
+        assert!(probe_reply(vec![1]).is_err());
+        assert!(probe_reply(vec![1, 99]).is_err());
+        let reason = b"Screen capture unavailable";
+        let mut reply = vec![0];
+        reply.extend_from_slice(&(reason.len() as u32).to_be_bytes());
+        reply.extend_from_slice(reason);
+        assert!(
+            probe_reply(reply)
+                .unwrap_err()
+                .to_string()
+                .contains("Screen capture unavailable")
+        );
+        assert!(probe_reply(vec![0, 255, 255, 255, 255]).is_err());
+    }
 
     #[test]
     fn runs_the_mise_shim_when_there_is_one() {

@@ -52,6 +52,27 @@ pub struct Session {
     pub client_flags: u8,
 }
 
+/// RFB connection failure before authentication, with a reason a viewer can display.
+pub async fn reject_unavailable<S>(stream: &mut S) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    stream.write_all(SERVER_VERSION).await?;
+    let mut version = [0; 12];
+    stream.read_exact(&mut version).await?;
+    let (_, minor) = parse_version(&version)?;
+    if minor >= 7 {
+        stream.write_u8(0).await?;
+    } else {
+        stream.write_u32(0).await?;
+    }
+    let reason = b"Screen capture unavailable. On the host, run wayshare doctor inside the Hyprland desktop and check journalctl --user -u wayshare.";
+    stream.write_u32(reason.len() as u32).await?;
+    stream.write_all(reason).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 pub async fn run<S>(
     stream: &mut S,
     auth: &AuthConfig,

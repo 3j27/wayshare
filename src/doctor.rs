@@ -1,8 +1,7 @@
 //! `wayshare doctor`: checks each piece a working setup needs and says how to fix what's missing.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::net::IpAddr;
 use std::process::Command;
-use std::time::Duration;
 
 use anyhow::Result;
 
@@ -141,18 +140,21 @@ pub fn run() -> Result<bool> {
         );
     }
 
-    let probe = match s.listen.ip() {
-        ip if ip.is_unspecified() => {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), s.listen.port())
-        }
-        _ => s.listen,
-    };
-    match TcpStream::connect_timeout(&probe, Duration::from_secs(1)) {
-        Ok(_) => r.ok("Listening", &s.listen.to_string()),
+    match crate::service::check_ready(s.listen) {
+        Ok(()) => r.ok("Readiness", "RFB greeting and authentication offer received"),
         Err(e) => r.fail(
-            "Listening",
-            &format!("nothing answers on {probe}: {e}"),
-            "check `journalctl --user -u wayshare`",
+            "Readiness",
+            &format!("{e:#}"),
+            "check `journalctl --user -u wayshare -n 50 --no-pager`; an open port alone does not mean capture works",
+        ),
+    }
+    #[cfg(target_os = "linux")]
+    match crate::server_linux::check_capture(s.output.as_deref()) {
+        Ok(()) => r.ok("Capture", "received a desktop frame"),
+        Err(e) => r.fail(
+            "Capture",
+            &format!("{e:#}"),
+            "run this inside your Hyprland desktop; check stale Wayland environment values and capture device permissions",
         ),
     }
 

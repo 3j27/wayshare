@@ -45,7 +45,23 @@ pub async fn run(mut stream: TcpStream, cfg: Arc<Config>, id: SessionId) -> Resu
     stream.set_nodelay(true)?;
     set_keepalive(&stream);
     let peer = stream.peer_addr()?;
-    let source = blocking(|| (cfg.frame_source)()).context("creating frame source")?;
+    let source = match blocking(|| (cfg.frame_source)()).context("creating frame source") {
+        Ok(source) => source,
+        Err(error) => {
+            warn!(
+                "screen capture unavailable: {error:#}; run `wayshare doctor` inside the Hyprland desktop"
+            );
+            // Preserve detailed diagnostics in the journal, but do not disclose device paths
+            // or session details to an unauthenticated viewer.
+            let rejection = handshake::reject_unavailable(&mut stream);
+            match tokio::time::timeout(HANDSHAKE_TIMEOUT, rejection).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => debug!("could not report capture failure to viewer: {e:#}"),
+                Err(e) => warn!("timed out reporting capture failure to viewer: {e}"),
+            }
+            return Err(error.context("screen capture failed before authentication; run `wayshare doctor` inside the Hyprland desktop; logs: `journalctl --user -u wayshare`"));
+        }
+    };
     let (w, h) = source.size();
     let cmds = cfg.server_cmds(canonical_ip(peer.ip()));
 
@@ -1253,6 +1269,43 @@ mod tests {
                 srp: None,
             },
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_failure_sends_a_reason_and_preserves_the_cause() {
+        for version in [b"RFB 003.889\n", b"RFB 003.003\n"] {
+            let mut cfg = test_config();
+            cfg.frame_source = Arc::new(|| anyhow::bail!("UDMABUF_CREATE: simulated failure"));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                run(stream, Arc::new(cfg), 1).await
+            });
+            let mut client = TcpStream::connect(address).await.unwrap();
+            let exchange = async {
+                let mut greeting = [0; 12];
+                client.read_exact(&mut greeting).await.unwrap();
+                assert_eq!(&greeting, handshake::SERVER_VERSION);
+                client.write_all(version).await.unwrap();
+                if version == b"RFB 003.003\n" {
+                    assert_eq!(client.read_u32().await.unwrap(), 0);
+                } else {
+                    assert_eq!(client.read_u8().await.unwrap(), 0);
+                }
+                let length = client.read_u32().await.unwrap();
+                let mut reason = vec![0; length as usize];
+                client.read_exact(&mut reason).await.unwrap();
+                let reason = String::from_utf8(reason).unwrap();
+                assert!(reason.contains("wayshare doctor"));
+                assert!(!reason.contains("UDMABUF"));
+            };
+            tokio::time::timeout(Duration::from_secs(2), exchange)
+                .await
+                .unwrap();
+            let error = server.await.unwrap().unwrap_err();
+            assert!(format!("{error:#}").contains("UDMABUF_CREATE: simulated failure"));
+        }
     }
 
     /// Runs one session on loopback; returns the client positioned after ServerInit.
